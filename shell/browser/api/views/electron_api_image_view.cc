@@ -9,6 +9,7 @@
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/object_template_builder.h"
 #include "shell/common/node_includes.h"
+#include "ui/gfx/image/image.h"
 
 namespace electron::api {
 
@@ -19,7 +20,7 @@ ImageView::ImageView() : View(new views::ImageView()) {
 ImageView::~ImageView() = default;
 
 void ImageView::SetImage(const gfx::Image& image) {
-  image_view()->SetImage(image.AsImageSkia());
+  image_view()->SetImage(ui::ImageModel::FromImage(image));
 }
 
 // static
@@ -56,4 +57,4 @@ void Initialize(v8::Local<v8::Object> exports,
 
 }  // namespace
 
-NODE_LINKED_MODULE_CONTEXT_AWARE(electron_browser_image_view, Initialize)
+NODE_LINKED_BINDING_CONTEXT_AWARE(electron_browser_image_view, Initialize)

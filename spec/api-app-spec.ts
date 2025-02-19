@@ -1,16 +1,21 @@
+import { app, BrowserWindow, Menu, session, net as electronNet, WebContents, utilityProcess } from 'electron/main';
+
 import { assert, expect } from 'chai';
-import * as cp from 'child_process';
-import * as https from 'https';
-import * as http from 'http';
-import * as net from 'net';
-import * as fs from 'fs-extra';
-import * as path from 'path';
-import { promisify } from 'util';
-import { app, BrowserWindow, Menu, session, net as electronNet } from 'electron/main';
-import { emittedOnce } from './events-helpers';
-import { closeWindow, closeAllWindows } from './window-helpers';
-import { ifdescribe, ifit, waitUntil } from './spec-helpers';
+import * as semver from 'semver';
 import split = require('split')
+
+import * as cp from 'node:child_process';
+import { once } from 'node:events';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as https from 'node:https';
+import * as net from 'node:net';
+import * as path from 'node:path';
+import { promisify } from 'node:util';
+
+import { collectStreamBody, getResponse } from './lib/net-helpers';
+import { ifdescribe, ifit, listen, waitUntil } from './lib/spec-helpers';
+import { closeWindow, closeAllWindows } from './lib/window-helpers';
 
 const fixturesPath = path.resolve(__dirname, 'fixtures');
 
@@ -33,7 +38,7 @@ describe('app module', () => {
   let secureUrl: string;
   const certPath = path.join(fixturesPath, 'certificates');
 
-  before((done) => {
+  before(async () => {
     const options = {
       key: fs.readFileSync(path.join(certPath, 'server.key')),
       cert: fs.readFileSync(path.join(certPath, 'server.pem')),
@@ -55,11 +60,7 @@ describe('app module', () => {
       }
     });
 
-    server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as net.AddressInfo).port;
-      secureUrl = `https://127.0.0.1:${port}`;
-      done();
-    });
+    secureUrl = (await listen(server)).url;
   });
 
   after(done => {
@@ -173,7 +174,7 @@ describe('app module', () => {
       if (appProcess && appProcess.stdout) {
         appProcess.stdout.on('data', data => { output += data; });
       }
-      const [code] = await emittedOnce(appProcess, 'exit');
+      const [code] = await once(appProcess, 'exit');
 
       if (process.platform !== 'win32') {
         expect(output).to.include('Exit event with code: 123');
@@ -186,18 +187,13 @@ describe('app module', () => {
       const electronPath = process.execPath;
 
       appProcess = cp.spawn(electronPath, [appPath]);
-      const [code, signal] = await emittedOnce(appProcess, 'exit');
+      const [code, signal] = await once(appProcess, 'exit');
 
       expect(signal).to.equal(null, 'exit signal should be null, if you see this please tag @MarshallOfSound');
       expect(code).to.equal(123, 'exit code should be 123, if you see this please tag @MarshallOfSound');
     });
 
-    it('exits gracefully', async function () {
-      if (!['darwin', 'linux'].includes(process.platform)) {
-        this.skip();
-        return;
-      }
-
+    ifit(['darwin', 'linux'].includes(process.platform))('exits gracefully', async function () {
       const electronPath = process.execPath;
       const appPath = path.join(fixturesPath, 'api', 'singleton');
       appProcess = cp.spawn(electronPath, [appPath]);
@@ -207,7 +203,7 @@ describe('app module', () => {
       if (appProcess && appProcess.stdout) {
         appProcess.stdout.on('data', () => appProcess!.kill());
       }
-      const [code, signal] = await emittedOnce(appProcess, 'exit');
+      const [code, signal] = await once(appProcess, 'exit');
 
       const message = `code:\n${code}\nsignal:\n${signal}`;
       expect(code).to.equal(0, message);
@@ -233,37 +229,37 @@ describe('app module', () => {
       this.timeout(120000);
       const appPath = path.join(fixturesPath, 'api', 'singleton-data');
       const first = cp.spawn(process.execPath, [appPath]);
-      await emittedOnce(first.stdout, 'data');
+      await once(first.stdout, 'data');
       // Start second app when received output.
       const second = cp.spawn(process.execPath, [appPath]);
-      const [code2] = await emittedOnce(second, 'exit');
+      const [code2] = await once(second, 'exit');
       expect(code2).to.equal(1);
-      const [code1] = await emittedOnce(first, 'exit');
+      const [code1] = await once(first, 'exit');
       expect(code1).to.equal(0);
     });
 
     it('returns true when setting non-existent user data folder', async function () {
       const appPath = path.join(fixturesPath, 'api', 'singleton-userdata');
       const instance = cp.spawn(process.execPath, [appPath]);
-      const [code] = await emittedOnce(instance, 'exit');
+      const [code] = await once(instance, 'exit');
       expect(code).to.equal(0);
     });
 
     async function testArgumentPassing (testArgs: SingleInstanceLockTestArgs) {
       const appPath = path.join(fixturesPath, 'api', 'singleton-data');
       const first = cp.spawn(process.execPath, [appPath, ...testArgs.args]);
-      const firstExited = emittedOnce(first, 'exit');
+      const firstExited = once(first, 'exit');
 
       // Wait for the first app to boot.
       const firstStdoutLines = first.stdout.pipe(split());
-      while ((await emittedOnce(firstStdoutLines, 'data')).toString() !== 'started') {
+      while ((await once(firstStdoutLines, 'data')).toString() !== 'started') {
         // wait.
       }
-      const additionalDataPromise = emittedOnce(firstStdoutLines, 'data');
+      const additionalDataPromise = once(firstStdoutLines, 'data');
 
       const secondInstanceArgs = [process.execPath, appPath, ...testArgs.args, '--some-switch', 'some-arg'];
       const second = cp.spawn(secondInstanceArgs[0], secondInstanceArgs.slice(1));
-      const secondExited = emittedOnce(second, 'exit');
+      const secondExited = once(second, 'exit');
 
       const [code2] = await secondExited;
       expect(code2).to.equal(1);
@@ -354,7 +350,7 @@ describe('app module', () => {
           expectedAdditionalData: undefined
         });
         assert(false);
-      } catch (e) {
+      } catch {
         // This is expected.
       }
     });
@@ -413,13 +409,7 @@ describe('app module', () => {
     });
   });
 
-  describe('app.setUserActivity(type, userInfo)', () => {
-    before(function () {
-      if (process.platform !== 'darwin') {
-        this.skip();
-      }
-    });
-
+  ifdescribe(process.platform === 'darwin')('app.setUserActivity(type, userInfo)', () => {
     it('sets the current activity', () => {
       app.setUserActivity('com.electron.testActivity', { testData: '123' });
       expect(app.getCurrentActivityType()).to.equal('com.electron.testActivity');
@@ -431,7 +421,7 @@ describe('app module', () => {
     it('is emitted when visiting a server with a self-signed cert', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL(secureUrl);
-      await emittedOnce(app, 'certificate-error');
+      await once(app, 'certificate-error');
     });
 
     describe('when denied', () => {
@@ -448,7 +438,7 @@ describe('app module', () => {
       it('causes did-fail-load', async () => {
         const w = new BrowserWindow({ show: false });
         w.loadURL(secureUrl);
-        await emittedOnce(w.webContents, 'did-fail-load');
+        await once(w.webContents, 'did-fail-load');
       });
     });
   });
@@ -507,10 +497,12 @@ describe('app module', () => {
   describe('BrowserWindow events', () => {
     let w: BrowserWindow = null as any;
 
-    afterEach(() => closeWindow(w).then(() => { w = null as any; }));
+    afterEach(() => {
+      closeWindow(w).then(() => { w = null as any; });
+    });
 
     it('should emit browser-window-focus event when window is focused', async () => {
-      const emitted = emittedOnce(app, 'browser-window-focus');
+      const emitted = once(app, 'browser-window-focus') as Promise<[any, BrowserWindow]>;
       w = new BrowserWindow({ show: false });
       w.emit('focus');
       const [, window] = await emitted;
@@ -518,7 +510,7 @@ describe('app module', () => {
     });
 
     it('should emit browser-window-blur event when window is blurred', async () => {
-      const emitted = emittedOnce(app, 'browser-window-blur');
+      const emitted = once(app, 'browser-window-blur') as Promise<[any, BrowserWindow]>;
       w = new BrowserWindow({ show: false });
       w.emit('blur');
       const [, window] = await emitted;
@@ -526,35 +518,17 @@ describe('app module', () => {
     });
 
     it('should emit browser-window-created event when window is created', async () => {
-      const emitted = emittedOnce(app, 'browser-window-created');
+      const emitted = once(app, 'browser-window-created') as Promise<[any, BrowserWindow]>;
       w = new BrowserWindow({ show: false });
       const [, window] = await emitted;
       expect(window.id).to.equal(w.id);
     });
 
     it('should emit web-contents-created event when a webContents is created', async () => {
-      const emitted = emittedOnce(app, 'web-contents-created');
+      const emitted = once(app, 'web-contents-created') as Promise<[any, WebContents]>;
       w = new BrowserWindow({ show: false });
       const [, webContents] = await emitted;
       expect(webContents.id).to.equal(w.webContents.id);
-    });
-
-    // FIXME: re-enable this test on win32.
-    ifit(process.platform !== 'win32')('should emit renderer-process-crashed event when renderer crashes', async () => {
-      w = new BrowserWindow({
-        show: false,
-        webPreferences: {
-          nodeIntegration: true,
-          contextIsolation: false
-        }
-      });
-      await w.loadURL('about:blank');
-
-      const emitted = emittedOnce(app, 'renderer-process-crashed');
-      w.webContents.executeJavaScript('process.crash()');
-
-      const [, webContents] = await emitted;
-      expect(webContents).to.equal(w.webContents);
     });
 
     // FIXME: re-enable this test on win32.
@@ -568,7 +542,7 @@ describe('app module', () => {
       });
       await w.loadURL('about:blank');
 
-      const emitted = emittedOnce(app, 'render-process-gone');
+      const emitted = once(app, 'render-process-gone') as Promise<[any, WebContents, Electron.RenderProcessGoneDetails]>;
       w.webContents.executeJavaScript('process.crash()');
 
       const [, webContents, details] = await emitted;
@@ -624,7 +598,10 @@ describe('app module', () => {
     });
   });
 
-  ifdescribe(process.platform !== 'linux' && !process.mas)('app.get/setLoginItemSettings API', function () {
+  ifdescribe(process.platform !== 'linux' && !process.mas && (process.platform !== 'darwin' || process.arch === 'arm64'))('app.get/setLoginItemSettings API', function () {
+    const isMac = process.platform === 'darwin';
+    const isWin = process.platform === 'win32';
+
     const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
     const processStartArgs = [
       '--processStart', `"${path.basename(process.execPath)}"`,
@@ -640,6 +617,8 @@ describe('app module', () => {
       '/f',
       '/d'
     ];
+    const productVersion = isMac ? cp.execSync('sw_vers -productVersion').toString().trim() : '';
+    const isVenturaOrHigher = semver.gt(semver.coerce(productVersion) || '0.0.0', '13.0.0');
 
     beforeEach(() => {
       app.setLoginItemSettings({ openAtLogin: false });
@@ -653,18 +632,19 @@ describe('app module', () => {
       app.setLoginItemSettings({ name: 'additionalEntry', openAtLogin: false });
     });
 
-    ifit(process.platform !== 'win32')('sets and returns the app as a login item', function () {
+    ifit(!isWin)('sets and returns the app as a login item', () => {
       app.setLoginItemSettings({ openAtLogin: true });
-      expect(app.getLoginItemSettings()).to.deep.equal({
-        openAtLogin: true,
-        openAsHidden: false,
-        wasOpenedAtLogin: false,
-        wasOpenedAsHidden: false,
-        restoreState: false
-      });
+
+      const settings = app.getLoginItemSettings();
+      expect(settings.openAtLogin).to.equal(true);
+      expect(settings.openAsHidden).to.equal(false);
+      expect(settings.wasOpenedAtLogin).to.equal(false);
+      expect(settings.wasOpenedAsHidden).to.equal(false);
+      expect(settings.restoreState).to.equal(false);
+      if (isVenturaOrHigher) expect(settings.status).to.equal('enabled');
     });
 
-    ifit(process.platform === 'win32')('sets and returns the app as a login item (windows)', function () {
+    ifit(isWin)('sets and returns the app as a login item (windows)', () => {
       app.setLoginItemSettings({ openAtLogin: true, enabled: true });
       expect(app.getLoginItemSettings()).to.deep.equal({
         openAtLogin: true,
@@ -701,18 +681,21 @@ describe('app module', () => {
       });
     });
 
-    ifit(process.platform !== 'win32')('adds a login item that loads in hidden mode', function () {
+    ifit(!isWin)('adds a login item that loads in hidden mode', () => {
       app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
-      expect(app.getLoginItemSettings()).to.deep.equal({
-        openAtLogin: true,
-        openAsHidden: process.platform === 'darwin' && !process.mas, // Only available on macOS
-        wasOpenedAtLogin: false,
-        wasOpenedAsHidden: false,
-        restoreState: false
-      });
+
+      const settings = app.getLoginItemSettings();
+      expect(settings.openAtLogin).to.equal(true);
+
+      const hasOpenAsHidden = process.platform === 'darwin' && !isVenturaOrHigher;
+      expect(settings.openAsHidden).to.equal(hasOpenAsHidden);
+      expect(settings.wasOpenedAtLogin).to.equal(false);
+      expect(settings.wasOpenedAsHidden).to.equal(false);
+      expect(settings.restoreState).to.equal(false);
+      if (isVenturaOrHigher) expect(settings.status).to.equal('enabled');
     });
 
-    ifit(process.platform === 'win32')('adds a login item that loads in hidden mode (windows)', function () {
+    ifit(isWin)('adds a login item that loads in hidden mode (windows)', () => {
       app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
       expect(app.getLoginItemSettings()).to.deep.equal({
         openAtLogin: true,
@@ -731,7 +714,7 @@ describe('app module', () => {
       });
     });
 
-    it('correctly sets and unsets the LoginItem', function () {
+    it('correctly sets and unsets the LoginItem', () => {
       expect(app.getLoginItemSettings().openAtLogin).to.equal(false);
 
       app.setLoginItemSettings({ openAtLogin: true });
@@ -741,22 +724,76 @@ describe('app module', () => {
       expect(app.getLoginItemSettings().openAtLogin).to.equal(false);
     });
 
-    it('correctly sets and unsets the LoginItem as hidden', function () {
-      if (process.platform !== 'darwin') this.skip();
-
+    ifit(isMac)('correctly sets and unsets the LoginItem as hidden', () => {
       expect(app.getLoginItemSettings().openAtLogin).to.equal(false);
       expect(app.getLoginItemSettings().openAsHidden).to.equal(false);
 
       app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
       expect(app.getLoginItemSettings().openAtLogin).to.equal(true);
-      expect(app.getLoginItemSettings().openAsHidden).to.equal(true);
+      expect(app.getLoginItemSettings().openAsHidden).to.equal(!isVenturaOrHigher);
 
       app.setLoginItemSettings({ openAtLogin: true, openAsHidden: false });
       expect(app.getLoginItemSettings().openAtLogin).to.equal(true);
       expect(app.getLoginItemSettings().openAsHidden).to.equal(false);
     });
 
-    ifit(process.platform === 'win32')('allows you to pass a custom executable and arguments', function () {
+    ifdescribe(isMac)('using SMAppService', () => {
+      ifit(isVenturaOrHigher)('can set a login item', () => {
+        app.setLoginItemSettings({
+          openAtLogin: true,
+          type: 'mainAppService'
+        });
+
+        expect(app.getLoginItemSettings()).to.deep.equal({
+          status: 'enabled',
+          openAtLogin: true,
+          openAsHidden: false,
+          restoreState: false,
+          wasOpenedAtLogin: false,
+          wasOpenedAsHidden: false
+        });
+      });
+
+      ifit(isVenturaOrHigher)('throws when setting non-default type with no name', () => {
+        expect(() => {
+          app.setLoginItemSettings({
+            openAtLogin: true,
+            type: 'daemonService'
+          });
+        }).to.throw(/'name' is required when type is not mainAppService/);
+      });
+
+      ifit(isVenturaOrHigher)('throws when getting non-default type with no name', () => {
+        expect(() => {
+          app.getLoginItemSettings({
+            type: 'daemonService'
+          });
+        }).to.throw(/'name' is required when type is not mainAppService/);
+      });
+
+      ifit(isVenturaOrHigher)('can unset a login item', () => {
+        app.setLoginItemSettings({
+          openAtLogin: true,
+          type: 'mainAppService'
+        });
+
+        app.setLoginItemSettings({
+          openAtLogin: false,
+          type: 'mainAppService'
+        });
+
+        expect(app.getLoginItemSettings()).to.deep.equal({
+          status: 'not-registered',
+          openAtLogin: false,
+          openAsHidden: false,
+          restoreState: false,
+          wasOpenedAtLogin: false,
+          wasOpenedAsHidden: false
+        });
+      });
+    });
+
+    ifit(isWin)('allows you to pass a custom executable and arguments', () => {
       app.setLoginItemSettings({ openAtLogin: true, path: updateExe, args: processStartArgs, enabled: true });
       expect(app.getLoginItemSettings().openAtLogin).to.equal(false);
       const openAtLoginTrueEnabledTrue = app.getLoginItemSettings({
@@ -786,7 +823,7 @@ describe('app module', () => {
       expect(openAtLoginFalseEnabledFalse.executableWillLaunchAtLogin).to.equal(false);
     });
 
-    ifit(process.platform === 'win32')('allows you to pass a custom name', function () {
+    ifit(isWin)('allows you to pass a custom name', () => {
       app.setLoginItemSettings({ openAtLogin: true });
       app.setLoginItemSettings({ openAtLogin: true, name: 'additionalEntry', enabled: false });
       expect(app.getLoginItemSettings()).to.deep.equal({
@@ -829,7 +866,7 @@ describe('app module', () => {
       });
     });
 
-    ifit(process.platform === 'win32')('finds launch items independent of args', function () {
+    ifit(isWin)('finds launch items independent of args', () => {
       app.setLoginItemSettings({ openAtLogin: true, args: ['arg1'] });
       app.setLoginItemSettings({ openAtLogin: true, name: 'additionalEntry', enabled: false, args: ['arg2'] });
       expect(app.getLoginItemSettings()).to.deep.equal({
@@ -855,7 +892,7 @@ describe('app module', () => {
       });
     });
 
-    ifit(process.platform === 'win32')('finds launch items independent of path quotation or casing', function () {
+    ifit(isWin)('finds launch items independent of path quotation or casing', () => {
       const expectation = {
         openAtLogin: false,
         openAsHidden: false,
@@ -891,10 +928,10 @@ describe('app module', () => {
       });
     });
 
-    ifit(process.platform === 'win32')('detects disabled by TaskManager', async function () {
+    ifit(isWin)('detects disabled by TaskManager', async () => {
       app.setLoginItemSettings({ openAtLogin: true, name: 'additionalEntry', enabled: true, args: ['arg1'] });
       const appProcess = cp.spawn('reg', [...regAddArgs, '030000000000000000000000']);
-      await emittedOnce(appProcess, 'exit');
+      await once(appProcess, 'exit');
       expect(app.getLoginItemSettings()).to.deep.equal({
         openAtLogin: false,
         openAsHidden: false,
@@ -912,7 +949,7 @@ describe('app module', () => {
       });
     });
 
-    ifit(process.platform === 'win32')('detects enabled by TaskManager', async function () {
+    ifit(isWin)('detects enabled by TaskManager', async () => {
       const expectation = {
         openAtLogin: false,
         openAsHidden: false,
@@ -931,12 +968,12 @@ describe('app module', () => {
 
       app.setLoginItemSettings({ openAtLogin: true, name: 'additionalEntry', enabled: false, args: ['arg1'] });
       let appProcess = cp.spawn('reg', [...regAddArgs, '020000000000000000000000']);
-      await emittedOnce(appProcess, 'exit');
+      await once(appProcess, 'exit');
       expect(app.getLoginItemSettings()).to.deep.equal(expectation);
 
       app.setLoginItemSettings({ openAtLogin: true, name: 'additionalEntry', enabled: false, args: ['arg1'] });
       appProcess = cp.spawn('reg', [...regAddArgs, '000000000000000000000000']);
-      await emittedOnce(appProcess, 'exit');
+      await once(appProcess, 'exit');
       expect(app.getLoginItemSettings()).to.deep.equal(expectation);
     });
   });
@@ -958,6 +995,44 @@ describe('app module', () => {
         app.setAccessibilitySupportEnabled(true);
         expect(app.isAccessibilitySupportEnabled()).to.eql(true);
       });
+    });
+  });
+
+  ifdescribe(process.platform === 'win32')('setJumpList(categories)', () => {
+    it('throws an error when categories is not null or an array', () => {
+      expect(() => {
+        app.setJumpList('string' as any);
+      }).to.throw('Argument must be null or an array of categories');
+    });
+
+    it('can get jump list settings', () => {
+      const settings = app.getJumpListSettings();
+      expect(settings).to.eql({ minItems: 10, removedItems: [] });
+    });
+
+    it('can set a jump list with an array of categories', () => {
+      expect(() => {
+        app.setJumpList([
+          { type: 'frequent' },
+          {
+            items: [{
+              type: 'task',
+              title: 'New Project',
+              program: process.execPath,
+              args: '--new-project',
+              description: 'Create a new project.'
+            },
+            { type: 'separator' },
+            {
+              type: 'task',
+              title: 'Recover Project',
+              program: process.execPath,
+              args: '--recover-project',
+              description: 'Recover Project'
+            }]
+          }
+        ]);
+      }).to.not.throw();
     });
   });
 
@@ -1046,7 +1121,7 @@ describe('app module', () => {
 
     describe('sessionData', () => {
       const appPath = path.join(__dirname, 'fixtures', 'apps', 'set-path');
-      const appName = fs.readJsonSync(path.join(appPath, 'package.json')).name;
+      const appName = JSON.parse(fs.readFileSync(path.join(appPath, 'package.json'), 'utf8')).name;
       const userDataPath = path.join(app.getPath('appData'), appName);
       const tempBrowserDataPath = path.join(app.getPath('temp'), appName);
 
@@ -1067,8 +1142,8 @@ describe('app module', () => {
       };
 
       beforeEach(() => {
-        fs.removeSync(userDataPath);
-        fs.removeSync(tempBrowserDataPath);
+        fs.rmSync(userDataPath, { force: true, recursive: true });
+        fs.rmSync(tempBrowserDataPath, { force: true, recursive: true });
       });
 
       it('writes to userData by default', () => {
@@ -1103,13 +1178,10 @@ describe('app module', () => {
     });
   });
 
-  describe('select-client-certificate event', () => {
+  ifdescribe(process.platform !== 'linux')('select-client-certificate event', () => {
     let w: BrowserWindow;
 
     before(function () {
-      if (process.platform === 'linux') {
-        this.skip();
-      }
       session.fromPartition('empty-certificate').setCertificateVerifyProc((req, cb) => { cb(0); });
     });
 
@@ -1138,7 +1210,7 @@ describe('app module', () => {
     });
   });
 
-  describe('setAsDefaultProtocolClient(protocol, path, args)', () => {
+  ifdescribe(process.platform === 'win32')('setAsDefaultProtocolClient(protocol, path, args)', () => {
     const protocol = 'electron-test';
     const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
     const processStartArgs = [
@@ -1150,16 +1222,12 @@ describe('app module', () => {
     let classesKey: any;
 
     before(function () {
-      if (process.platform !== 'win32') {
-        this.skip();
-      } else {
-        Winreg = require('winreg');
+      Winreg = require('winreg');
 
-        classesKey = new Winreg({
-          hive: Winreg.HKCU,
-          key: '\\Software\\Classes\\'
-        });
-      }
+      classesKey = new Winreg({
+        hive: Winreg.HKCU,
+        key: '\\Software\\Classes\\'
+      });
     });
 
     after(function (done) {
@@ -1208,7 +1276,7 @@ describe('app module', () => {
       app.setAsDefaultProtocolClient(protocol);
 
       const keys = await promisify(classesKey.keys).call(classesKey) as any[];
-      const exists = !!keys.find(key => key.key.includes(protocol));
+      const exists = keys.some(key => key.key.includes(protocol));
       expect(exists).to.equal(true);
     });
 
@@ -1217,7 +1285,7 @@ describe('app module', () => {
       app.removeAsDefaultProtocolClient(protocol);
 
       const keys = await promisify(classesKey.keys).call(classesKey) as any[];
-      const exists = !!keys.find(key => key.key.includes(protocol));
+      const exists = keys.some(key => key.key.includes(protocol));
       expect(exists).to.equal(false);
     });
 
@@ -1233,7 +1301,7 @@ describe('app module', () => {
       app.removeAsDefaultProtocolClient(protocol);
 
       const keys = await promisify(classesKey.keys).call(classesKey) as any[];
-      const exists = !!keys.find(key => key.key.includes(protocol));
+      const exists = keys.some(key => key.key.includes(protocol));
       expect(exists).to.equal(true);
     });
 
@@ -1244,21 +1312,18 @@ describe('app module', () => {
   });
 
   describe('getApplicationNameForProtocol()', () => {
-    it('returns application names for common protocols', function () {
+    // TODO: Linux CI doesn't have registered http & https handlers
+    ifit(!(process.env.CI && process.platform === 'linux'))('returns application names for common protocols', function () {
       // We can't expect particular app names here, but these protocols should
       // at least have _something_ registered. Except on our Linux CI
       // environment apparently.
-      if (process.platform === 'linux') {
-        this.skip();
-      }
-
       const protocols = [
         'http://',
         'https://'
       ];
-      protocols.forEach((protocol) => {
+      for (const protocol of protocols) {
         expect(app.getApplicationNameForProtocol(protocol)).to.not.equal('');
-      });
+      }
     });
 
     it('returns an empty string for a bogus protocol', () => {
@@ -1294,7 +1359,7 @@ describe('app module', () => {
       const appPath = path.join(fixturesPath, 'api', 'quit-app');
       // App should exit with non 123 code.
       const first = cp.spawn(process.execPath, [appPath, 'electron-test:?', 'abc']);
-      const [code] = await emittedOnce(first, 'exit');
+      const [code] = await once(first, 'exit');
       expect(code).to.not.equal(123);
     });
 
@@ -1302,7 +1367,7 @@ describe('app module', () => {
       const appPath = path.join(fixturesPath, 'api', 'quit-app');
       // App should exit with code 123.
       const first = cp.spawn(process.execPath, [appPath, 'e:\\abc', 'abc']);
-      const [code] = await emittedOnce(first, 'exit');
+      const [code] = await once(first, 'exit');
       expect(code).to.equal(123);
     });
 
@@ -1310,7 +1375,7 @@ describe('app module', () => {
       const appPath = path.join(fixturesPath, 'api', 'quit-app');
       // App should exit with code 123.
       const first = cp.spawn(process.execPath, [appPath, '--', 'http://electronjs.org', 'electron-test://testdata']);
-      const [code] = await emittedOnce(first, 'exit');
+      const [code] = await once(first, 'exit');
       expect(code).to.equal(123);
     });
   });
@@ -1380,6 +1445,7 @@ describe('app module', () => {
 
         types.push(entry.type);
         expect(entry.cpu).to.have.ownProperty('percentCPUUsage').that.is.a('number');
+        expect(entry.cpu).to.have.ownProperty('cumulativeCPUUsage').that.is.a('number');
         expect(entry.cpu).to.have.ownProperty('idleWakeupsPerSecond').that.is.a('number');
 
         expect(entry.memory).to.have.property('workingSetSize').that.is.greaterThan(0);
@@ -1422,8 +1488,7 @@ describe('app module', () => {
     });
   });
 
-  // FIXME https://github.com/electron/electron/issues/24224
-  ifdescribe(process.platform !== 'linux')('getGPUInfo() API', () => {
+  ifdescribe(!process.env.IS_ASAN)('getGPUInfo() API', () => {
     const appPath = path.join(fixturesPath, 'api', 'gpu-info.js');
 
     const getGPUInfo = async (type: string) => {
@@ -1436,7 +1501,7 @@ describe('app module', () => {
       appProcess.stderr.on('data', (data) => {
         errorData += data;
       });
-      const [exitCode] = await emittedOnce(appProcess, 'exit');
+      const [exitCode] = await once(appProcess, 'exit');
       if (exitCode === 0) {
         try {
           const [, json] = /HERE COMES THE JSON: (.+) AND THERE IT WAS/.exec(gpuInfoData)!;
@@ -1449,7 +1514,7 @@ describe('app module', () => {
         }
       } else {
         // return error if not clean exit
-        return Promise.reject(new Error(errorData));
+        throw new Error(errorData);
       }
     };
     const verifyBasicGPUInfo = async (gpuInfo: any) => {
@@ -1496,27 +1561,12 @@ describe('app module', () => {
     });
   });
 
-  describe('sandbox options', () => {
+  ifdescribe(!(process.platform === 'linux' && (process.arch === 'arm64' || process.arch === 'arm')))('sandbox options', () => {
     let appProcess: cp.ChildProcess = null as any;
     let server: net.Server = null as any;
     const socketPath = process.platform === 'win32' ? '\\\\.\\pipe\\electron-mixed-sandbox' : '/tmp/electron-mixed-sandbox';
 
     beforeEach(function (done) {
-      if (process.platform === 'linux' && (process.arch === 'arm64' || process.arch === 'arm')) {
-        // Our ARM tests are run on VSTS rather than CircleCI, and the Docker
-        // setup on VSTS disallows syscalls that Chrome requires for setting up
-        // sandboxing.
-        // See:
-        // - https://docs.docker.com/engine/security/seccomp/#significant-syscalls-blocked-by-the-default-profile
-        // - https://chromium.googlesource.com/chromium/src/+/70.0.3538.124/sandbox/linux/services/credentials.cc#292
-        // - https://github.com/docker/docker-ce/blob/ba7dfc59ccfe97c79ee0d1379894b35417b40bca/components/engine/profiles/seccomp/seccomp_default.go#L497
-        // - https://blog.jessfraz.com/post/how-to-use-new-docker-seccomp-profiles/
-        //
-        // Adding `--cap-add SYS_ADMIN` or `--security-opt seccomp=unconfined`
-        // to the Docker invocation allows the syscalls that Chrome needs, but
-        // are probably more permissive than we'd like.
-        this.skip();
-      }
       fs.unlink(socketPath, () => {
         server = net.createServer();
         server.listen(socketPath);
@@ -1527,13 +1577,17 @@ describe('app module', () => {
     afterEach(done => {
       if (appProcess != null) appProcess.kill();
 
-      server.close(() => {
-        if (process.platform === 'win32') {
-          done();
-        } else {
-          fs.unlink(socketPath, () => done());
-        }
-      });
+      if (server) {
+        server.close(() => {
+          if (process.platform === 'win32') {
+            done();
+          } else {
+            fs.unlink(socketPath, () => done());
+          }
+        });
+      } else {
+        done();
+      }
     });
 
     describe('when app.enableSandbox() is called', () => {
@@ -1612,8 +1666,7 @@ describe('app module', () => {
     });
   });
 
-  const dockDescribe = process.platform === 'darwin' ? describe : describe.skip;
-  dockDescribe('dock APIs', () => {
+  ifdescribe(process.platform === 'darwin')('dock APIs', () => {
     after(async () => {
       await app.dock.show();
     });
@@ -1858,6 +1911,167 @@ describe('app module', () => {
       })).to.eventually.be.rejectedWith(/ERR_NAME_NOT_RESOLVED/);
     });
   });
+
+  describe('about panel', () => {
+    it('app.setAboutPanelOptions() does not crash', () => {
+      app.setAboutPanelOptions({
+        applicationName: 'electron!!',
+        version: '1.2.3'
+      });
+    });
+
+    it('app.showAboutPanel() does not crash & runs asynchronously', () => {
+      app.showAboutPanel();
+    });
+  });
+
+  describe('app.setProxy(options)', () => {
+    let server: http.Server;
+
+    afterEach(async () => {
+      if (server) {
+        server.close();
+      }
+      await app.setProxy({ mode: 'direct' as const });
+    });
+
+    it('allows configuring proxy settings', async () => {
+      const config = { proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('PROXY myproxy:80');
+    });
+
+    it('allows removing the implicit bypass rules for localhost', async () => {
+      const config = {
+        proxyRules: 'http=myproxy:80',
+        proxyBypassRules: '<-loopback>'
+      };
+
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://localhost');
+      expect(proxy).to.equal('PROXY myproxy:80');
+    });
+
+    it('allows configuring proxy settings with pacScript', async () => {
+      server = http.createServer((req, res) => {
+        const pac = `
+          function FindProxyForURL(url, host) {
+            return "PROXY myproxy:8132";
+          }
+        `;
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ns-proxy-autoconfig'
+        });
+        res.end(pac);
+      });
+      const { url } = await listen(server);
+      {
+        const config = { pacScript: url };
+        await app.setProxy(config);
+        const proxy = await app.resolveProxy('https://google.com');
+        expect(proxy).to.equal('PROXY myproxy:8132');
+      }
+      {
+        const config = { mode: 'pac_script' as any, pacScript: url };
+        await app.setProxy(config);
+        const proxy = await app.resolveProxy('https://google.com');
+        expect(proxy).to.equal('PROXY myproxy:8132');
+      }
+    });
+
+    it('allows bypassing proxy settings', async () => {
+      const config = {
+        proxyRules: 'http=myproxy:80',
+        proxyBypassRules: '<local>'
+      };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example/');
+      expect(proxy).to.equal('DIRECT');
+    });
+
+    it('allows configuring proxy settings with mode `direct`', async () => {
+      const config = { mode: 'direct' as const, proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('DIRECT');
+    });
+
+    it('allows configuring proxy settings with mode `auto_detect`', async () => {
+      const config = { mode: 'auto_detect' as const };
+      await app.setProxy(config);
+    });
+
+    it('allows configuring proxy settings with mode `pac_script`', async () => {
+      const config = { mode: 'pac_script' as const };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('DIRECT');
+    });
+
+    it('allows configuring proxy settings with mode `fixed_servers`', async () => {
+      const config = { mode: 'fixed_servers' as const, proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('PROXY myproxy:80');
+    });
+
+    it('allows configuring proxy settings with mode `system`', async () => {
+      const config = { mode: 'system' as const };
+      await app.setProxy(config);
+    });
+
+    it('disallows configuring proxy settings with mode `invalid`', async () => {
+      const config = { mode: 'invalid' as any };
+      await expect(app.setProxy(config)).to.eventually.be.rejectedWith(/Invalid mode/);
+    });
+
+    it('impacts proxy for requests made from utility process', async () => {
+      const utilityFixturePath = path.resolve(__dirname, 'fixtures', 'api', 'utility-process', 'api-net-spec.js');
+      const fn = async () => {
+        const urlRequest = electronNet.request('http://example.com/');
+        const response = await getResponse(urlRequest);
+        expect(response.statusCode).to.equal(200);
+        const message = await collectStreamBody(response);
+        expect(message).to.equal('ok from proxy\n');
+      };
+      server = http.createServer((req, res) => {
+        res.writeHead(200);
+        res.end('ok from proxy\n');
+      });
+      const { port, hostname } = await listen(server);
+      const config = { mode: 'fixed_servers' as const, proxyRules: `http=${hostname}:${port}` };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal(`PROXY ${hostname}:${port}`);
+      const child = utilityProcess.fork(utilityFixturePath, [], {
+        execArgv: ['--expose-gc']
+      });
+      child.postMessage({ fn: `(${fn})()` });
+      const [data] = await once(child, 'message');
+      expect(data.ok).to.be.true(data.message);
+      // Cleanup.
+      const [code] = await once(child, 'exit');
+      expect(code).to.equal(0);
+    });
+
+    it('does not impact proxy for requests made from main process', async () => {
+      server = http.createServer((req, res) => {
+        res.writeHead(200);
+        res.end('ok from server\n');
+      });
+      const { url } = await listen(server);
+      const config = { mode: 'fixed_servers' as const, proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('PROXY myproxy:80');
+      const urlRequest = electronNet.request(url);
+      const response = await getResponse(urlRequest);
+      expect(response.statusCode).to.equal(200);
+      const message = await collectStreamBody(response);
+      expect(message).to.equal('ok from server\n');
+    });
+  });
 });
 
 describe('default behavior', () => {
@@ -1932,7 +2146,7 @@ describe('default behavior', () => {
     let server: http.Server;
     let serverUrl: string;
 
-    before((done) => {
+    before(async () => {
       server = http.createServer((request, response) => {
         if (request.headers.authorization) {
           return response.end('ok');
@@ -1940,16 +2154,19 @@ describe('default behavior', () => {
         response
           .writeHead(401, { 'WWW-Authenticate': 'Basic realm="Foo"' })
           .end();
-      }).listen(0, '127.0.0.1', () => {
-        serverUrl = 'http://127.0.0.1:' + (server.address() as net.AddressInfo).port;
-        done();
       });
+
+      serverUrl = (await listen(server)).url;
+    });
+
+    after(() => {
+      server.close();
     });
 
     it('should emit a login event on app when a WebContents hits a 401', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL(serverUrl);
-      const [, webContents] = await emittedOnce(app, 'login');
+      const [, webContents] = await once(app, 'login') as [any, WebContents];
       expect(webContents).to.equal(w.webContents);
     });
   });
@@ -1976,7 +2193,7 @@ async function runTestApp (name: string, ...args: any[]) {
   let output = '';
   appProcess.stdout.on('data', (data) => { output += data; });
 
-  await emittedOnce(appProcess.stdout, 'end');
+  await once(appProcess.stdout, 'end');
 
   return JSON.parse(output);
 }

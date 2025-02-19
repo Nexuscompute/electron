@@ -1,10 +1,14 @@
-import { expect } from 'chai';
-import * as http from 'http';
-import * as path from 'path';
-import { AddressInfo } from 'net';
 import { BrowserWindow } from 'electron/main';
-import { closeAllWindows } from './window-helpers';
-import { emittedOnce, emittedUntil } from './events-helpers';
+
+import { expect } from 'chai';
+
+import { once } from 'node:events';
+import * as http from 'node:http';
+import * as path from 'node:path';
+
+import { emittedUntil } from './lib/events-helpers';
+import { listen } from './lib/spec-helpers';
+import { closeAllWindows } from './lib/window-helpers';
 
 describe('debugger module', () => {
   const fixtures = path.resolve(__dirname, 'fixtures');
@@ -28,16 +32,12 @@ describe('debugger module', () => {
       expect(w.webContents.debugger.isAttached()).to.be.true();
     });
 
-    it('fails when protocol version is not supported', done => {
-      try {
-        w.webContents.debugger.attach('2.0');
-      } catch (err) {
-        expect(w.webContents.debugger.isAttached()).to.be.false();
-        done();
-      }
+    it('fails when protocol version is not supported', () => {
+      expect(() => w.webContents.debugger.attach('2.0')).to.throw();
+      expect(w.webContents.debugger.isAttached()).to.be.false();
     });
 
-    it('attaches when no protocol version is specified', async () => {
+    it('attaches when no protocol version is specified', () => {
       w.webContents.debugger.attach();
       expect(w.webContents.debugger.isAttached()).to.be.true();
     });
@@ -45,7 +45,7 @@ describe('debugger module', () => {
 
   describe('debugger.detach', () => {
     it('fires detach event', async () => {
-      const detach = emittedOnce(w.webContents.debugger, 'detach');
+      const detach = once(w.webContents.debugger, 'detach');
       w.webContents.debugger.attach();
       w.webContents.debugger.detach();
       const [, reason] = await detach;
@@ -55,7 +55,7 @@ describe('debugger module', () => {
 
     it('doesn\'t disconnect an active devtools session', async () => {
       w.webContents.loadURL('about:blank');
-      const detach = emittedOnce(w.webContents.debugger, 'detach');
+      const detach = once(w.webContents.debugger, 'detach');
       w.webContents.debugger.attach();
       w.webContents.openDevTools();
       w.webContents.once('devtools-opened', () => {
@@ -63,7 +63,7 @@ describe('debugger module', () => {
       });
       await detach;
       expect(w.webContents.debugger.isAttached()).to.be.false();
-      expect((w as any).devToolsWebContents.isDestroyed()).to.be.false();
+      expect(w.devToolsWebContents.isDestroyed()).to.be.false();
     });
   });
 
@@ -94,7 +94,7 @@ describe('debugger module', () => {
       w.webContents.loadURL('about:blank');
       w.webContents.debugger.attach();
 
-      const opened = emittedOnce(w.webContents, 'devtools-opened');
+      const opened = once(w.webContents, 'devtools-opened');
       w.webContents.openDevTools();
       await opened;
 
@@ -110,7 +110,7 @@ describe('debugger module', () => {
     it('fires message event', async () => {
       const url = process.platform !== 'win32'
         ? `file://${path.join(fixtures, 'pages', 'a.html')}`
-        : `file:///${path.join(fixtures, 'pages', 'a.html').replace(/\\/g, '/')}`;
+        : `file:///${path.join(fixtures, 'pages', 'a.html').replaceAll('\\', '/')}`;
       w.webContents.loadURL(url);
       w.webContents.debugger.attach();
       const message = emittedUntil(w.webContents.debugger, 'message',
@@ -118,9 +118,9 @@ describe('debugger module', () => {
       w.webContents.debugger.sendCommand('Console.enable');
       const [,, params] = await message;
       w.webContents.debugger.detach();
-      expect((params as any).message.level).to.equal('log');
-      expect((params as any).message.url).to.equal(url);
-      expect((params as any).message.text).to.equal('a');
+      expect(params.message.level).to.equal('log');
+      expect(params.message.url).to.equal(url);
+      expect(params.message.text).to.equal('a');
     });
 
     it('returns error message when command fails', async () => {
@@ -138,9 +138,9 @@ describe('debugger module', () => {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.end('\u0024');
       });
-      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 
-      w.loadURL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { url } = await listen(server);
+      w.loadURL(url);
       // If we do this synchronously, it's fast enough to attach and enable
       // network capture before the load. If we do it before the loadURL, for
       // some reason network capture doesn't get enabled soon enough and we get
@@ -155,19 +155,17 @@ describe('debugger module', () => {
       expect(body).to.equal('\u0024');
     });
 
-    it('does not crash for invalid unicode characters in message', (done) => {
-      try {
-        w.webContents.debugger.attach();
-      } catch (err) {
-        done(`unexpected error : ${err}`);
-      }
+    it('does not crash for invalid unicode characters in message', async () => {
+      w.webContents.debugger.attach();
 
-      w.webContents.debugger.on('message', (event, method) => {
-        // loadingFinished indicates that page has been loaded and it did not
-        // crash because of invalid UTF-8 data
-        if (method === 'Network.loadingFinished') {
-          done();
-        }
+      const loadingFinished = new Promise<void>(resolve => {
+        w.webContents.debugger.on('message', (event, method) => {
+          // loadingFinished indicates that page has been loaded and it did not
+          // crash because of invalid UTF-8 data
+          if (method === 'Network.loadingFinished') {
+            resolve();
+          }
+        });
       });
 
       server = http.createServer((req, res) => {
@@ -175,16 +173,49 @@ describe('debugger module', () => {
         res.end('\uFFFF');
       });
 
-      server.listen(0, '127.0.0.1', () => {
-        w.webContents.debugger.sendCommand('Network.enable');
-        w.loadURL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { url } = await listen(server);
+      w.webContents.debugger.sendCommand('Network.enable');
+      w.loadURL(url);
+
+      await loadingFinished;
+    });
+
+    it('can get and set cookies using the Storage API', async () => {
+      await w.webContents.loadURL('about:blank');
+      w.webContents.debugger.attach('1.1');
+
+      await w.webContents.debugger.sendCommand('Storage.clearCookies', {});
+      await w.webContents.debugger.sendCommand('Storage.setCookies', {
+        cookies: [
+          {
+            name: 'cookieOne',
+            value: 'cookieValueOne',
+            url: 'https://cookieone.com'
+          },
+          {
+            name: 'cookieTwo',
+            value: 'cookieValueTwo',
+            url: 'https://cookietwo.com'
+          }
+        ]
       });
+
+      const { cookies } = await w.webContents.debugger.sendCommand('Storage.getCookies', {});
+      expect(cookies).to.have.lengthOf(2);
+
+      const cookieOne = cookies.find((cookie: any) => cookie.name === 'cookieOne');
+      expect(cookieOne.domain).to.equal('cookieone.com');
+      expect(cookieOne.value).to.equal('cookieValueOne');
+
+      const cookieTwo = cookies.find((cookie: any) => cookie.name === 'cookieTwo');
+      expect(cookieTwo.domain).to.equal('cookietwo.com');
+      expect(cookieTwo.value).to.equal('cookieValueTwo');
     });
 
     it('uses empty sessionId by default', async () => {
       w.webContents.loadURL('about:blank');
       w.webContents.debugger.attach();
-      const onMessage = emittedOnce(w.webContents.debugger, 'message');
+      const onMessage = once(w.webContents.debugger, 'message');
       await w.webContents.debugger.sendCommand('Target.setDiscoverTargets', { discover: true });
       const [, method, params, sessionId] = await onMessage;
       expect(method).to.equal('Target.targetCreated');
@@ -196,20 +227,25 @@ describe('debugger module', () => {
     it('creates unique session id for each target', (done) => {
       w.webContents.loadFile(path.join(__dirname, 'fixtures', 'sub-frames', 'debug-frames.html'));
       w.webContents.debugger.attach();
-      let session: String;
+      let debuggerSessionId: string;
 
       w.webContents.debugger.on('message', (event, ...args) => {
         const [method, params, sessionId] = args;
         if (method === 'Target.targetCreated') {
           w.webContents.debugger.sendCommand('Target.attachToTarget', { targetId: params.targetInfo.targetId, flatten: true }).then(result => {
-            session = result.sessionId;
+            debuggerSessionId = result.sessionId;
             w.webContents.debugger.sendCommand('Debugger.enable', {}, result.sessionId);
+
+            // Ensure debugger finds a script to pause to possibly reduce flaky
+            // tests.
+            w.webContents.mainFrame.executeJavaScript('void 0;');
           });
         }
         if (method === 'Debugger.scriptParsed') {
-          expect(sessionId).to.equal(session);
-          w.webContents.debugger.detach();
-          done();
+          if (sessionId === debuggerSessionId) {
+            w.webContents.debugger.detach();
+            done();
+          }
         }
       });
       w.webContents.debugger.sendCommand('Target.setDiscoverTargets', { discover: true });

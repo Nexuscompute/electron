@@ -1,5 +1,10 @@
-const path = require('path');
-const v8 = require('v8');
+const { app, protocol } = require('electron');
+
+const fs = require('node:fs');
+const path = require('node:path');
+const v8 = require('node:v8');
+
+const FAILURE_STATUS_KEY = 'Electron_Spec_Runner_Failures';
 
 // We want to terminate on errors, not throw up a dialog
 process.on('uncaughtException', (err) => {
@@ -11,7 +16,10 @@ process.on('uncaughtException', (err) => {
 process.env.TS_NODE_PROJECT = path.resolve(__dirname, '../tsconfig.spec.json');
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
-const { app, protocol } = require('electron');
+// Some Linux machines have broken hardware acceleration support.
+if (process.env.ELECTRON_TEST_DISABLE_HARDWARE_ACCELERATION) {
+  app.disableHardwareAcceleration();
+}
 
 v8.setFlagsFromString('--expose_gc');
 app.commandLine.appendSwitch('js-flags', '--expose_gc');
@@ -21,6 +29,17 @@ app.on('window-all-closed', () => null);
 // Use fake device for Media Stream to replace actual camera and microphone.
 app.commandLine.appendSwitch('use-fake-device-for-media-stream');
 app.commandLine.appendSwitch('host-rules', 'MAP localhost2 127.0.0.1');
+app.commandLine.appendSwitch('host-resolver-rules', [
+  'MAP ipv4.localhost2 10.0.0.1',
+  'MAP ipv6.localhost2 [::1]',
+  'MAP notfound.localhost2 ~NOTFOUND'
+].join(', '));
+
+// Enable features required by tests.
+app.commandLine.appendSwitch('enable-features', [
+  // spec/api-web-frame-main-spec.ts
+  'DocumentPolicyIncludeJSCallStacksInCrashReports'
+].join(','));
 
 global.standardScheme = 'app';
 global.zoomScheme = 'zoom';
@@ -29,6 +48,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: global.standardScheme, privileges: { standard: true, secure: true, stream: false } },
   { scheme: global.zoomScheme, privileges: { standard: true, secure: true } },
   { scheme: global.serviceWorkerScheme, privileges: { allowServiceWorkers: true, standard: true, secure: true } },
+  { scheme: 'http-like', privileges: { standard: true, secure: true, corsEnabled: true, supportFetchAPI: true } },
   { scheme: 'cors-blob', privileges: { corsEnabled: true, supportFetchAPI: true } },
   { scheme: 'cors', privileges: { corsEnabled: true, supportFetchAPI: true } },
   { scheme: 'no-cors', privileges: { supportFetchAPI: true } },
@@ -49,7 +69,12 @@ app.whenReady().then(async () => {
     .argv;
 
   const Mocha = require('mocha');
-  const mochaOptions = {};
+  const mochaOptions = {
+    forbidOnly: process.env.CI
+  };
+  if (process.env.CI) {
+    mochaOptions.retries = 3;
+  }
   if (process.env.MOCHA_REPORTER) {
     mochaOptions.reporter = process.env.MOCHA_REPORTER;
   }
@@ -58,7 +83,28 @@ app.whenReady().then(async () => {
       reporterEnabled: process.env.MOCHA_MULTI_REPORTERS
     };
   }
+  // The MOCHA_GREP and MOCHA_INVERT are used in some vendor builds for sharding
+  // tests.
+  if (process.env.MOCHA_GREP) {
+    mochaOptions.grep = process.env.MOCHA_GREP;
+  }
+  if (process.env.MOCHA_INVERT) {
+    mochaOptions.invert = process.env.MOCHA_INVERT === 'true';
+  }
   const mocha = new Mocha(mochaOptions);
+
+  // Add a root hook on mocha to skip any tests that are disabled
+  const disabledTests = new Set(
+    JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'disabled-tests.json'), 'utf8')
+    )
+  );
+  mocha.suite.beforeEach(function () {
+    // TODO(clavin): add support for disabling *suites* by title, not just tests
+    if (disabledTests.has(this.currentTest?.fullTitle())) {
+      this.skip();
+    }
+  });
 
   // The cleanup method is registered this way rather than through an
   // `afterEach` at the top level so that it can run before other `afterEach`
@@ -68,7 +114,7 @@ app.whenReady().then(async () => {
   // 1. test completes,
   // 2. `defer()`-ed methods run, in reverse order,
   // 3. regular `afterEach` hooks run.
-  const { runCleanupFunctions } = require('./spec-helpers');
+  const { runCleanupFunctions } = require('./lib/spec-helpers');
   mocha.suite.on('suite', function attach (suite) {
     suite.afterEach('cleanup', runCleanupFunctions);
     suite.on('suite', attach);
@@ -83,6 +129,11 @@ app.whenReady().then(async () => {
   if (argv.grep) mocha.grep(argv.grep);
   if (argv.invert) mocha.invert();
 
+  const baseElectronDir = path.resolve(__dirname, '..');
+  const validTestPaths = argv.files && argv.files.map(file =>
+    path.isAbsolute(file)
+      ? path.relative(baseElectronDir, file)
+      : path.normalize(file));
   const filter = (file) => {
     if (!/-spec\.[tj]s$/.test(file)) {
       return false;
@@ -97,8 +148,7 @@ app.whenReady().then(async () => {
       return false;
     }
 
-    const baseElectronDir = path.resolve(__dirname, '..');
-    if (argv.files && !argv.files.includes(path.relative(baseElectronDir, file))) {
+    if (validTestPaths && !validTestPaths.includes(path.relative(baseElectronDir, file))) {
       return false;
     }
 
@@ -106,15 +156,26 @@ app.whenReady().then(async () => {
   };
 
   const { getFiles } = require('./get-files');
-  const testFiles = await getFiles(__dirname, { filter });
-  testFiles.sort().forEach((file) => {
+  const testFiles = await getFiles(__dirname, filter);
+  for (const file of testFiles.sort()) {
     mocha.addFile(file);
-  });
+  }
+
+  if (validTestPaths && validTestPaths.length > 0 && testFiles.length === 0) {
+    console.error('Test files were provided, but they did not match any searched files');
+    console.error('provided file paths (relative to electron/):', validTestPaths);
+    process.exit(1);
+  }
 
   const cb = () => {
     // Ensure the callback is called after runner is defined
     process.nextTick(() => {
-      process.exit(runner.failures);
+      if (process.env.ELECTRON_FORCE_TEST_SUITE_EXIT === 'true') {
+        console.log(`${FAILURE_STATUS_KEY}: ${runner.failures}`);
+        process.kill(process.pid);
+      } else {
+        process.exit(runner.failures);
+      }
     });
   };
 

@@ -1,9 +1,11 @@
-import { EventEmitter } from 'events';
 import { MessagePortMain } from '@electron/internal/browser/message-port-main';
+
+import { EventEmitter } from 'events';
+
 const { createParentPort } = process._linkedBinding('electron_utility_parent_port');
 
-export class ParentPort extends EventEmitter {
-  #port: ParentPort
+export class ParentPort extends EventEmitter implements Electron.ParentPort {
+  #port: ParentPort;
   constructor () {
     super();
     this.#port = createParentPort();

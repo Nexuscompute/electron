@@ -1,15 +1,17 @@
-import { expect } from 'chai';
-import * as path from 'path';
-import * as fs from 'fs';
 import { BrowserWindow } from 'electron/main';
-import { ifdescribe, ifit } from './spec-helpers';
-import { closeAllWindows } from './window-helpers';
-import { emittedOnce } from './events-helpers';
-import * as childProcess from 'child_process';
 
-const Module = require('module');
+import { expect } from 'chai';
 
-const features = process._linkedBinding('electron_common_features');
+import * as childProcess from 'node:child_process';
+import { once } from 'node:events';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+import { ifdescribe, ifit } from './lib/spec-helpers';
+import { closeAllWindows } from './lib/window-helpers';
+
+const Module = require('node:module') as NodeJS.ModuleInternal;
+
 const nativeModulesEnabled = !process.env.ELECTRON_SKIP_NATIVE_MODULE_TESTS;
 
 describe('modules support', () => {
@@ -28,9 +30,9 @@ describe('modules support', () => {
         ).to.be.fulfilled();
       });
 
-      ifit(features.isRunAsNodeEnabled())('can be required in node binary', async function () {
+      it('can be required in node binary', async function () {
         const child = childProcess.fork(path.join(fixtures, 'module', 'echo.js'));
-        const [msg] = await emittedOnce(child, 'message');
+        const [msg] = await once(child, 'message');
         expect(msg).to.equal('ok');
       });
 
@@ -60,18 +62,16 @@ describe('modules support', () => {
         await expect(w.webContents.executeJavaScript('{ require(\'@electron-ci/uv-dlopen\'); null }')).to.be.fulfilled();
       });
 
-      ifit(features.isRunAsNodeEnabled())('can be required in node binary', async function () {
+      it('can be required in node binary', async function () {
         const child = childProcess.fork(path.join(fixtures, 'module', 'uv-dlopen.js'));
-        await new Promise<void>(resolve => child.once('exit', (exitCode) => {
-          expect(exitCode).to.equal(0);
-          resolve();
-        }));
+        const [exitCode] = await once(child, 'exit');
+        expect(exitCode).to.equal(0);
       });
     });
 
     describe('q', () => {
       describe('Q.when', () => {
-        it('emits the fullfil callback', (done) => {
+        it('emits the fulfil callback', (done) => {
           const Q = require('q');
           Q(true).then((val: boolean) => {
             expect(val).to.be.true();

@@ -1,9 +1,16 @@
-import { expect } from 'chai';
 import { Notification } from 'electron/main';
-import { emittedOnce } from './events-helpers';
-import { ifit } from './spec-helpers';
+
+import { expect } from 'chai';
+
+import { once } from 'node:events';
+
+import { ifit } from './lib/spec-helpers';
 
 describe('Notification module', () => {
+  it('sets the correct class name on the prototype', () => {
+    expect(Notification.prototype.constructor.name).to.equal('Notification');
+  });
+
   it('is supported', () => {
     expect(Notification.isSupported()).to.be.a('boolean');
   });
@@ -123,12 +130,12 @@ describe('Notification module', () => {
       silent: true
     });
     {
-      const e = emittedOnce(n, 'show');
+      const e = once(n, 'show');
       n.show();
       await e;
     }
     {
-      const e = emittedOnce(n, 'close');
+      const e = once(n, 'close');
       n.close();
       await e;
     }
@@ -139,7 +146,7 @@ describe('Notification module', () => {
       toastXml: 'not xml'
     });
     {
-      const e = emittedOnce(n, 'failed');
+      const e = once(n, 'failed');
       n.show();
       await e;
     }

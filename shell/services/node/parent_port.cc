@@ -9,11 +9,13 @@
 #include "base/no_destructor.h"
 #include "gin/data_object_builder.h"
 #include "gin/handle.h"
+#include "gin/object_template_builder.h"
 #include "shell/browser/api/message_port.h"
+#include "shell/browser/javascript_environment.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/event_emitter_caller.h"
 #include "shell/common/node_includes.h"
-#include "shell/common/v8_value_serializer.h"
+#include "shell/common/v8_util.h"
 #include "third_party/blink/public/common/messaging/transferable_message_mojom_traits.h"
 
 namespace electron {
@@ -33,7 +35,7 @@ void ParentPort::Initialize(blink::MessagePortDescriptor port) {
   connector_ = std::make_unique<mojo::Connector>(
       port_.TakeHandleToEntangleWithEmbedder(),
       mojo::Connector::SINGLE_THREADED_SEND,
-      base::ThreadTaskRunnerHandle::Get());
+      base::SingleThreadTaskRunner::GetCurrentDefault());
   connector_->PauseIncomingMethodCallProcessing();
   connector_->set_incoming_receiver(this);
   connector_->set_connection_error_handler(
@@ -44,7 +46,13 @@ void ParentPort::PostMessage(v8::Local<v8::Value> message_value) {
   if (!connector_closed_ && connector_ && connector_->is_valid()) {
     v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
     blink::TransferableMessage transferable_message;
-    electron::SerializeV8Value(isolate, message_value, &transferable_message);
+
+    if (!electron::SerializeV8Value(isolate, message_value,
+                                    &transferable_message)) {
+      // SerializeV8Value sets an exception.
+      return;
+    }
+
     mojo::Message mojo_message =
         blink::mojom::TransferableMessage::WrapAsMessage(
             std::move(transferable_message));
@@ -130,4 +138,4 @@ void Initialize(v8::Local<v8::Object> exports,
 
 }  // namespace
 
-NODE_LINKED_MODULE_CONTEXT_AWARE(electron_utility_parent_port, Initialize)
+NODE_LINKED_BINDING_CONTEXT_AWARE(electron_utility_parent_port, Initialize)

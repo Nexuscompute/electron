@@ -1,15 +1,17 @@
-import { expect } from 'chai';
-import * as childProcess from 'child_process';
-import * as http from 'http';
-import * as Busboy from 'busboy';
-import * as path from 'path';
-import { ifdescribe, ifit, defer, startRemoteControlApp, delay, repeatedly } from './spec-helpers';
 import { app } from 'electron/main';
-import { crashReporter } from 'electron/common';
-import { AddressInfo } from 'net';
-import { EventEmitter } from 'events';
-import * as fs from 'fs';
+
+import * as Busboy from 'busboy';
+import { expect } from 'chai';
 import * as uuid from 'uuid';
+
+import * as childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
+
+import { ifdescribe, ifit, defer, startRemoteControlApp, repeatedly, listen } from './lib/spec-helpers';
 
 const isWindowsOnArm = process.platform === 'win32' && process.arch === 'arm64';
 const isLinuxOnArm = process.platform === 'linux' && process.arch.includes('arm');
@@ -63,7 +65,7 @@ const startServer = async () => {
   }
 
   const server = http.createServer((req, res) => {
-    const busboy = new Busboy({ headers: req.headers });
+    const busboy = Busboy({ headers: req.headers });
     const fields = {} as Record<string, any>;
     const files = {} as Record<string, Buffer>;
     busboy.on('file', (fieldname, file) => {
@@ -89,11 +91,7 @@ const startServer = async () => {
     req.pipe(busboy);
   });
 
-  await new Promise<void>(resolve => {
-    server.listen(0, '127.0.0.1', () => { resolve(); });
-  });
-
-  const port = (server.address() as AddressInfo).port;
+  const { port } = await listen(server);
 
   defer(() => { server.close(); });
 
@@ -120,7 +118,7 @@ function waitForNewFileInDir (dir: string): Promise<string[]> {
   function readdirIfPresent (dir: string): string[] {
     try {
       return fs.readdirSync(dir);
-    } catch (e) {
+    } catch {
       return [];
     }
   }
@@ -185,7 +183,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
     });
 
     // Ensures that passing in crashpadHandlerPID flag for Linx child processes
-    // does not affect child proocess args.
+    // does not affect child process args.
     ifit(process.platform === 'linux')('ensure linux child process args are not modified', async () => {
       const { port, waitForCrash } = await startServer();
       let exitCode: number | null = null;
@@ -303,7 +301,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
           ignoreSystemCrashHandler: true,
           extra: { longParam: 'a'.repeat(100000) }
         });
-        setTimeout(() => process.crash());
+        setTimeout().then(() => process.crash());
       }, port);
       const crash = await waitForCrash();
       expect(stitchLongCrashParam(crash, 'longParam')).to.have.lengthOf(160 * 127, 'crash should have truncated longParam');
@@ -325,7 +323,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
           }
         });
         require('electron').crashReporter.addExtraParameter('c'.repeat(kKeyLengthMax + 10), 'value');
-        setTimeout(() => process.crash());
+        setTimeout().then(() => process.crash());
       }, port, kKeyLengthMax);
       const crash = await waitForCrash();
       expect(crash).not.to.have.property('a'.repeat(kKeyLengthMax + 10));
@@ -380,7 +378,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
     waitForCrash().then(() => expect.fail('expected not to receive a dump'));
     await runCrashApp('renderer', port, ['--no-upload']);
     // wait a sec in case the crash reporter is about to upload a crash
-    await delay(1000);
+    await setTimeout(1000);
     expect(getCrashes()).to.have.length(0);
   });
 
@@ -406,7 +404,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
       try {
         fs.rmdirSync(dir, { recursive: true });
         fs.mkdirSync(dir);
-      } catch (e) { /* ignore */ }
+      } catch { /* ignore */ }
 
       // 1. start the crash reporter.
       await remotely((port: number) => {
@@ -430,7 +428,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
       );
       expect(firstReport).to.not.be.null();
       expect(firstReport.date).to.be.an.instanceOf(Date);
-      expect((+new Date()) - (+firstReport.date)).to.be.lessThan(30000);
+      expect((Date.now()) - (+firstReport.date)).to.be.lessThan(30000);
     });
   });
 
@@ -507,7 +505,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
     function crash (processType: string, remotely: Function) {
       if (processType === 'main') {
         return remotely(() => {
-          setTimeout(() => { process.crash(); });
+          setTimeout().then(() => { process.crash(); });
         });
       } else if (processType === 'renderer') {
         return remotely(() => {
@@ -527,7 +525,7 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
         const crashScriptPath = path.join(__dirname, 'fixtures', 'apps', 'crash', 'node-crash.js');
         return remotely((crashScriptPath: string) => {
           const { app } = require('electron');
-          const childProcess = require('child_process');
+          const childProcess = require('node:child_process');
           const version = app.getVersion();
           const url = 'http://127.0.0.1';
           childProcess.fork(crashScriptPath, [url, version], { silent: true });
@@ -535,7 +533,8 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
       }
     }
 
-    const processList = process.platform === 'linux' ? ['main', 'renderer', 'sandboxed-renderer']
+    const processList = process.platform === 'linux'
+      ? ['main', 'renderer', 'sandboxed-renderer']
       : ['main', 'renderer', 'sandboxed-renderer', 'node'];
     for (const crashingProcess of processList) {
       describe(`when ${crashingProcess} crashes`, () => {
@@ -587,16 +586,20 @@ ifdescribe(!isLinuxOnArm && !process.mas && !process.env.DISABLE_CRASH_REPORTER_
   });
 
   describe('start() option validation', () => {
-    it('requires that the submitURL option be specified', () => {
-      expect(() => {
+    it('requires that the submitURL option be specified', async () => {
+      const { remotely } = await startRemoteControlApp();
+      await expect(remotely(() => {
+        const { crashReporter } = require('electron');
         crashReporter.start({} as any);
-      }).to.throw('submitURL must be specified when uploadToServer is true');
+      })).to.be.rejectedWith('submitURL must be specified when uploadToServer is true');
     });
 
-    it('allows the submitURL option to be omitted when uploadToServer is false', () => {
-      expect(() => {
+    it('allows the submitURL option to be omitted when uploadToServer is false', async () => {
+      const { remotely } = await startRemoteControlApp();
+      await expect(remotely(() => {
+        const { crashReporter } = require('electron');
         crashReporter.start({ uploadToServer: false } as any);
-      }).not.to.throw();
+      })).to.be.fulfilled();
     });
 
     it('can be called twice', async () => {

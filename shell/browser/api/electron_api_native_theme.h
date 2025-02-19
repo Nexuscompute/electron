@@ -5,17 +5,22 @@
 #ifndef ELECTRON_SHELL_BROWSER_API_ELECTRON_API_NATIVE_THEME_H_
 #define ELECTRON_SHELL_BROWSER_API_ELECTRON_API_NATIVE_THEME_H_
 
-#include "gin/handle.h"
+#include "base/memory/raw_ptr.h"
 #include "gin/wrappable.h"
 #include "shell/browser/event_emitter_mixin.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/native_theme_observer.h"
 
+namespace gin {
+template <typename T>
+class handle;
+}  // namespace gin
+
 namespace electron::api {
 
-class NativeTheme : public gin::Wrappable<NativeTheme>,
-                    public gin_helper::EventEmitterMixin<NativeTheme>,
-                    public ui::NativeThemeObserver {
+class NativeTheme final : public gin::Wrappable<NativeTheme>,
+                          public gin_helper::EventEmitterMixin<NativeTheme>,
+                          private ui::NativeThemeObserver {
  public:
   static gin::Handle<NativeTheme> Create(v8::Isolate* isolate);
 
@@ -45,14 +50,15 @@ class NativeTheme : public gin::Wrappable<NativeTheme>,
   bool ShouldUseHighContrastColors();
   bool ShouldUseInvertedColorScheme();
   bool InForcedColorsMode();
+  bool GetPrefersReducedTransparency();
 
   // ui::NativeThemeObserver:
   void OnNativeThemeUpdated(ui::NativeTheme* theme) override;
   void OnNativeThemeUpdatedOnUI();
 
  private:
-  ui::NativeTheme* ui_theme_;
-  ui::NativeTheme* web_theme_;
+  raw_ptr<ui::NativeTheme> ui_theme_;
+  raw_ptr<ui::NativeTheme> web_theme_;
 };
 
 }  // namespace electron::api

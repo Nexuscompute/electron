@@ -6,11 +6,13 @@
 
 #include <string>
 
-#include "base/callback_helpers.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/containers/contains.h"
+#include "base/functional/callback_helpers.h"
 #include "content/public/browser/device_service.h"
 #include "gin/dictionary.h"
 #include "gin/function_template.h"
+#include "gin/handle.h"
+#include "gin/object_template_builder.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
 #include "services/service_manager/public/cpp/connector.h"
 #include "shell/common/node_includes.h"
@@ -107,8 +109,8 @@ bool PowerSaveBlocker::Stop(int id) {
   return success;
 }
 
-bool PowerSaveBlocker::IsStarted(int id) {
-  return wake_lock_types_.find(id) != wake_lock_types_.end();
+bool PowerSaveBlocker::IsStarted(int id) const {
+  return base::Contains(wake_lock_types_, id);
 }
 
 // static
@@ -122,6 +124,10 @@ gin::ObjectTemplateBuilder PowerSaveBlocker::GetObjectTemplateBuilder(
       .SetMethod("start", &PowerSaveBlocker::Start)
       .SetMethod("stop", &PowerSaveBlocker::Stop)
       .SetMethod("isStarted", &PowerSaveBlocker::IsStarted);
+}
+
+const char* PowerSaveBlocker::GetTypeName() {
+  return "PowerSaveBlocker";
 }
 
 }  // namespace electron::api
@@ -140,5 +146,5 @@ void Initialize(v8::Local<v8::Object> exports,
 
 }  // namespace
 
-NODE_LINKED_MODULE_CONTEXT_AWARE(electron_browser_power_save_blocker,
-                                 Initialize)
+NODE_LINKED_BINDING_CONTEXT_AWARE(electron_browser_power_save_blocker,
+                                  Initialize)
