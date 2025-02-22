@@ -24,8 +24,8 @@ If you prefer the manual approach, there are 2 ways to distribute your applicati
 
 ### With prebuilt binaries
 
-To distribute your app manually, you need to download Electron's [prebuilt
-binaries](https://github.com/electron/electron/releases). Next, the folder
+To distribute your app manually, you need to download Electron's
+[prebuilt binaries](https://github.com/electron/electron/releases). Next, the folder
 containing your app should be named `app` and placed in Electron's resources
 directory as shown in the following examples.
 
@@ -55,7 +55,7 @@ will then be your distribution to deliver to users.
 ### With an app source code archive (asar)
 
 Instead of shipping your app by copying all of its source files, you can
-package your app into an [asar] archive to improve the performance of reading
+package your app into an [asar][] archive to improve the performance of reading
 files on platforms like Windows, if you are not already using a bundler such
 as Parcel or Webpack.
 

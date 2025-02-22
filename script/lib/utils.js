@@ -1,19 +1,16 @@
+const chalk = require('chalk');
 const { GitProcess } = require('dugite');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const ELECTRON_DIR = path.resolve(__dirname, '..', '..');
 const SRC_DIR = path.resolve(ELECTRON_DIR, '..');
 
-const RELEASE_BRANCH_PATTERN = /(\d)+-(?:(?:[0-9]+-x$)|(?:x+-y$))/;
-// TODO(main-migration): Simplify once main branch is renamed
-const MAIN_BRANCH_PATTERN = /^(main|master)$/;
-const ORIGIN_MAIN_BRANCH_PATTERN = /^origin\/(main|master)$/;
-
-require('colors');
-const pass = '✓'.green;
-const fail = '✗'.red;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const pass = chalk.green('✓');
+const fail = chalk.red('✗');
 
 function getElectronExec () {
   const OUT_DIR = getOutDir();
@@ -76,6 +73,10 @@ async function handleGitCall (args, gitDir) {
 }
 
 async function getCurrentBranch (gitDir) {
+  const RELEASE_BRANCH_PATTERN = /^\d+-x-y$/;
+  const MAIN_BRANCH_PATTERN = /^main$/;
+  const ORIGIN_MAIN_BRANCH_PATTERN = /^origin\/main$/;
+
   let branch = await handleGitCall(['rev-parse', '--abbrev-ref', 'HEAD'], gitDir);
   if (!MAIN_BRANCH_PATTERN.test(branch) && !RELEASE_BRANCH_PATTERN.test(branch)) {
     const lastCommit = await handleGitCall(['rev-parse', 'HEAD'], gitDir);
@@ -123,8 +124,24 @@ function chunkFilenames (filenames, offset = 0) {
   );
 }
 
+/**
+ * @param {string} top
+ * @param {(filename: string) => boolean} test
+ * @returns {Promise<string[]>}
+*/
+async function findMatchingFiles (top, test) {
+  return fs.promises.readdir(top, { encoding: 'utf8', recursive: true })
+    .then(files => {
+      return files
+        .filter(name => path.basename(name) !== '.bin')
+        .filter(name => test(name))
+        .map(name => path.join(top, name));
+    });
+}
+
 module.exports = {
   chunkFilenames,
+  findMatchingFiles,
   getCurrentBranch,
   getElectronExec,
   getOutDir,

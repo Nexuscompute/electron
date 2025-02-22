@@ -1,36 +1,39 @@
+import { MediaAccessPermissionRequest } from 'electron';
+import { clipboard } from 'electron/common';
+import { BrowserWindow, WebContents, webFrameMain, session, ipcMain, app, protocol, webContents, dialog, MessageBoxOptions } from 'electron/main';
+
 import { expect } from 'chai';
-import { BrowserWindow, WebContents, webFrameMain, session, ipcMain, app, protocol, webContents } from 'electron/main';
-import { emittedOnce } from './events-helpers';
-import { closeAllWindows } from './window-helpers';
-import * as https from 'https';
-import * as http from 'http';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as url from 'url';
-import * as ChildProcess from 'child_process';
-import { EventEmitter } from 'events';
-import { promisify } from 'util';
-import { ifit, ifdescribe, defer, delay, itremote } from './spec-helpers';
-import { AddressInfo } from 'net';
-import { PipeTransport } from './pipe-transport';
 import * as ws from 'ws';
+
+import * as ChildProcess from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as https from 'node:https';
+import { AddressInfo } from 'node:net';
+import * as path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
+import * as url from 'node:url';
+
+import { ifit, ifdescribe, defer, itremote, listen, startRemoteControlApp, waitUntil } from './lib/spec-helpers';
+import { closeAllWindows } from './lib/window-helpers';
+import { PipeTransport } from './pipe-transport';
 
 const features = process._linkedBinding('electron_common_features');
 
 const fixturesPath = path.resolve(__dirname, 'fixtures');
+const certPath = path.join(fixturesPath, 'certificates');
 
 describe('reporting api', () => {
-  // TODO(nornagon): this started failing a lot on CI. Figure out why and fix
-  // it.
-  it.skip('sends a report for a deprecation', async () => {
-    const reports = new EventEmitter();
+  it('sends a report for an intervention', async () => {
+    const reporting = new EventEmitter();
 
     // The Reporting API only works on https with valid certs. To dodge having
     // to set up a trusted certificate, hack the validator.
     session.defaultSession.setCertificateVerifyProc((req, cb) => {
       cb(0);
     });
-    const certPath = path.join(fixturesPath, 'certificates');
+
     const options = {
       key: fs.readFileSync(path.join(certPath, 'server.key')),
       cert: fs.readFileSync(path.join(certPath, 'server.pem')),
@@ -43,36 +46,35 @@ describe('reporting api', () => {
     };
 
     const server = https.createServer(options, (req, res) => {
-      if (req.url === '/report') {
+      if (req.url?.endsWith('report')) {
         let data = '';
         req.on('data', (d) => { data += d.toString('utf-8'); });
         req.on('end', () => {
-          reports.emit('report', JSON.parse(data));
+          reporting.emit('report', JSON.parse(data));
         });
       }
-      res.setHeader('Report-To', JSON.stringify({
-        group: 'default',
-        max_age: 120,
-        endpoints: [{ url: `https://localhost:${(server.address() as any).port}/report` }]
-      }));
+
+      const { port } = server.address() as any;
+      res.setHeader('Reporting-Endpoints', `default="https://localhost:${port}/report"`);
       res.setHeader('Content-Type', 'text/html');
-      // using the deprecated `webkitRequestAnimationFrame` will trigger a
-      // "deprecation" report.
-      res.end('<script>webkitRequestAnimationFrame(() => {})</script>');
+
+      res.end('<script>window.navigator.vibrate(1)</script>');
     });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    const bw = new BrowserWindow({
-      show: false
-    });
+
+    await listen(server);
+    const bw = new BrowserWindow({ show: false });
+
     try {
-      const reportGenerated = emittedOnce(reports, 'report');
-      const url = `https://localhost:${(server.address() as any).port}/a`;
-      await bw.loadURL(url);
-      const [report] = await reportGenerated;
-      expect(report).to.be.an('array');
-      expect(report[0].type).to.equal('deprecation');
-      expect(report[0].url).to.equal(url);
-      expect(report[0].body.id).to.equal('PrefixedRequestAnimationFrame');
+      const reportGenerated = once(reporting, 'report');
+      await bw.loadURL(`https://localhost:${(server.address() as AddressInfo).port}/a`);
+
+      const [reports] = await reportGenerated;
+      expect(reports).to.be.an('array').with.lengthOf(1);
+      const { type, url, body } = reports[0];
+      expect(type).to.equal('intervention');
+      expect(url).to.equal(url);
+      expect(body.id).to.equal('NavigatorVibrate');
+      expect(body.message).to.match(/Blocked call to navigator.vibrate because user hasn't tapped on the frame or any embedded frame yet/);
     } finally {
       bw.destroy();
       server.close();
@@ -88,7 +90,7 @@ describe('window.postMessage', () => {
   it('sets the source and origin correctly', async () => {
     const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
     w.loadURL(`file://${fixturesPath}/pages/window-open-postMessage-driver.html`);
-    const [, message] = await emittedOnce(ipcMain, 'complete');
+    const [, message] = await once(ipcMain, 'complete');
     expect(message.data).to.equal('testing');
     expect(message.origin).to.equal('file://');
     expect(message.sourceEqualsOpener).to.equal(true);
@@ -97,11 +99,12 @@ describe('window.postMessage', () => {
 });
 
 describe('focus handling', () => {
-  let webviewContents: WebContents = null as unknown as WebContents;
-  let w: BrowserWindow = null as unknown as BrowserWindow;
+  let webviewContents: WebContents;
+  let w: BrowserWindow;
 
   beforeEach(async () => {
     w = new BrowserWindow({
+      alwaysOnTop: true,
       show: true,
       webPreferences: {
         nodeIntegration: true,
@@ -110,11 +113,11 @@ describe('focus handling', () => {
       }
     });
 
-    const webviewReady = emittedOnce(w.webContents, 'did-attach-webview');
+    const webviewReady = once(w.webContents, 'did-attach-webview') as Promise<[any, WebContents]>;
     await w.loadFile(path.join(fixturesPath, 'pages', 'tab-focus-loop-elements.html'));
     const [, wvContents] = await webviewReady;
     webviewContents = wvContents;
-    await emittedOnce(webviewContents, 'did-finish-load');
+    await once(webviewContents, 'did-finish-load');
     w.focus();
   });
 
@@ -125,7 +128,7 @@ describe('focus handling', () => {
   });
 
   const expectFocusChange = async () => {
-    const [, focusedElementId] = await emittedOnce(ipcMain, 'focus-changed');
+    const [, focusedElementId] = await once(ipcMain, 'focus-changed');
     return focusedElementId;
   };
 
@@ -218,8 +221,7 @@ describe('web security', () => {
       res.setHeader('Content-Type', 'text/html');
       res.end('<body>');
     });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    serverUrl = `http://localhost:${(server.address() as any).port}`;
+    serverUrl = (await listen(server)).url;
   });
   after(() => {
     server.close();
@@ -227,13 +229,13 @@ describe('web security', () => {
 
   it('engages CORB when web security is not disabled', async () => {
     const w = new BrowserWindow({ show: false, webPreferences: { webSecurity: true, nodeIntegration: true, contextIsolation: false } });
-    const p = emittedOnce(ipcMain, 'success');
+    const p = once(ipcMain, 'success');
     await w.loadURL(`data:text/html,<script>
         const s = document.createElement('script')
         s.src = "${serverUrl}"
-        // The script will load successfully but its body will be emptied out
-        // by CORB, so we don't expect a syntax error.
-        s.onload = () => { require('electron').ipcRenderer.send('success') }
+        // The script will not load under ORB, refs https://chromium-review.googlesource.com/c/chromium/src/+/3785025.
+        // Before ORB an empty response is sent, which is now replaced by a network error.
+        s.onerror = () => { require('electron').ipcRenderer.send('success') }
         document.documentElement.appendChild(s)
       </script>`);
     await p;
@@ -241,7 +243,7 @@ describe('web security', () => {
 
   it('bypasses CORB when web security is disabled', async () => {
     const w = new BrowserWindow({ show: false, webPreferences: { webSecurity: false, nodeIntegration: true, contextIsolation: false } });
-    const p = emittedOnce(ipcMain, 'success');
+    const p = once(ipcMain, 'success');
     await w.loadURL(`data:text/html,
       <script>
         window.onerror = (e) => { require('electron').ipcRenderer.send('success', e) }
@@ -252,7 +254,7 @@ describe('web security', () => {
 
   it('engages CORS when web security is not disabled', async () => {
     const w = new BrowserWindow({ show: false, webPreferences: { webSecurity: true, nodeIntegration: true, contextIsolation: false } });
-    const p = emittedOnce(ipcMain, 'response');
+    const p = once(ipcMain, 'response');
     await w.loadURL(`data:text/html,<script>
         (async function() {
           try {
@@ -269,7 +271,7 @@ describe('web security', () => {
 
   it('bypasses CORS when web security is disabled', async () => {
     const w = new BrowserWindow({ show: false, webPreferences: { webSecurity: false, nodeIntegration: true, contextIsolation: false } });
-    const p = emittedOnce(ipcMain, 'response');
+    const p = once(ipcMain, 'response');
     await w.loadURL(`data:text/html,<script>
         (async function() {
           try {
@@ -287,7 +289,7 @@ describe('web security', () => {
   describe('accessing file://', () => {
     async function loadFile (w: BrowserWindow) {
       const thisFile = url.format({
-        pathname: __filename.replace(/\\/g, '/'),
+        pathname: __filename.replaceAll('\\', '/'),
         protocol: 'file',
         slashes: true
       });
@@ -355,6 +357,76 @@ describe('web security', () => {
     });
   });
 
+  describe('csp', () => {
+    for (const sandbox of [true, false]) {
+      describe(`when sandbox: ${sandbox}`, () => {
+        for (const contextIsolation of [true, false]) {
+          describe(`when contextIsolation: ${contextIsolation}`, () => {
+            it('prevents eval from running in an inline script', async () => {
+              const w = new BrowserWindow({
+                show: false,
+                webPreferences: { sandbox, contextIsolation }
+              });
+              w.loadURL(`data:text/html,<head>
+              <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'">
+            </head>
+            <script>
+              try {
+                // We use console.log here because it is easier than making a
+                // preload script, and the behavior under test changes when
+                // contextIsolation: false
+                console.log(eval('true'))
+              } catch (e) {
+                console.log(e.message)
+              }
+            </script>`);
+              const [{ message }] = await once(w.webContents, 'console-message');
+              expect(message).to.match(/Refused to evaluate a string/);
+            });
+
+            it('does not prevent eval from running in an inline script when there is no csp', async () => {
+              const w = new BrowserWindow({
+                show: false,
+                webPreferences: { sandbox, contextIsolation }
+              });
+              w.loadURL(`data:text/html,
+            <script>
+              try {
+                // We use console.log here because it is easier than making a
+                // preload script, and the behavior under test changes when
+                // contextIsolation: false
+                console.log(eval('true'))
+              } catch (e) {
+                console.log(e.message)
+              }
+            </script>`);
+              const [{ message }] = await once(w.webContents, 'console-message');
+              expect(message).to.equal('true');
+            });
+
+            it('prevents eval from running in executeJavaScript', async () => {
+              const w = new BrowserWindow({
+                show: false,
+                webPreferences: { sandbox, contextIsolation }
+              });
+              w.loadURL('data:text/html,<head><meta http-equiv="Content-Security-Policy" content="default-src \'self\'; script-src \'self\' \'unsafe-inline\'"></meta></head>');
+              await expect(w.webContents.executeJavaScript('eval("true")')).to.be.rejected();
+            });
+
+            it('does not prevent eval from running in executeJavaScript when there is no csp', async () => {
+              const w = new BrowserWindow({
+                show: false,
+                webPreferences: { sandbox, contextIsolation }
+              });
+              w.loadURL('data:text/html,');
+              expect(await w.webContents.executeJavaScript('eval("true")')).to.be.true();
+            });
+          });
+        }
+      });
+    }
+  });
+
   it('does not crash when multiple WebContent are created with web security disabled', () => {
     const options = { show: false, webPreferences: { webSecurity: false } };
     const w1 = new BrowserWindow(options);
@@ -389,12 +461,12 @@ describe('command line switches', () => {
       let stderr = '';
       appProcess.stderr.on('data', (data) => { stderr += data; });
 
-      const [code, signal] = await emittedOnce(appProcess, 'exit');
+      const [code, signal] = await once(appProcess, 'exit');
       if (code !== 0) {
         throw new Error(`Process exited with code "${code}" signal "${signal}" output "${output}" stderr "${stderr}"`);
       }
 
-      output = output.replace(/(\r\n|\n|\r)/gm, '');
+      output = output.replaceAll(/(\r\n|\n|\r)/gm, '');
       expect(output).to.equal(result);
     };
 
@@ -450,7 +522,7 @@ describe('command line switches', () => {
       const stdio = appProcess.stdio as unknown as [NodeJS.ReadableStream, NodeJS.WritableStream, NodeJS.WritableStream, NodeJS.WritableStream, NodeJS.ReadableStream];
       const pipe = new PipeTransport(stdio[3], stdio[4]);
       pipe.send({ id: 1, method: 'Browser.close', params: {} });
-      await new Promise(resolve => { appProcess!.on('exit', resolve); });
+      await once(appProcess, 'exit');
     });
   });
 
@@ -485,6 +557,36 @@ describe('command line switches', () => {
       });
     });
   });
+
+  describe('--trace-startup switch', () => {
+    const outputFilePath = path.join(app.getPath('temp'), 'trace.json');
+    afterEach(() => {
+      if (fs.existsSync(outputFilePath)) {
+        fs.unlinkSync(outputFilePath);
+      }
+    });
+
+    it('creates startup trace', async () => {
+      const rc = await startRemoteControlApp(['--trace-startup=*', `--trace-startup-file=${outputFilePath}`, '--trace-startup-duration=1', '--enable-logging']);
+      const stderrComplete = new Promise<string>(resolve => {
+        let stderr = '';
+        rc.process.stderr!.on('data', (chunk) => {
+          stderr += chunk.toString('utf8');
+        });
+        rc.process.on('close', () => { resolve(stderr); });
+      });
+      rc.remotely(() => {
+        global.setTimeout(() => {
+          require('electron').app.quit();
+        }, 5000);
+      });
+      const stderr = await stderrComplete;
+      expect(stderr).to.match(/Completed startup tracing to/);
+      expect(fs.existsSync(outputFilePath)).to.be.true('output exists');
+      expect(fs.statSync(outputFilePath).size).to.be.above(0,
+        `the trace output file is empty, check "${outputFilePath}"`);
+    });
+  });
 });
 
 describe('chromium features', () => {
@@ -494,7 +596,7 @@ describe('chromium features', () => {
     it('does not crash', (done) => {
       const w = new BrowserWindow({ show: false });
       w.webContents.once('did-finish-load', () => { done(); });
-      w.webContents.once('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.once('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'external-string.html'));
     });
   });
@@ -512,7 +614,7 @@ describe('chromium features', () => {
 
       let output = '';
       fpsProcess.stdout.on('data', data => { output += data; });
-      await emittedOnce(fpsProcess, 'exit');
+      await once(fpsProcess, 'exit');
 
       expect(output).to.include(fps.join(','));
     });
@@ -524,7 +626,7 @@ describe('chromium features', () => {
 
       let output = '';
       fpsProcess.stdout.on('data', data => { output += data; });
-      await emittedOnce(fpsProcess, 'exit');
+      await once(fpsProcess, 'exit');
 
       expect(output).to.include(fps.join(','));
     });
@@ -534,8 +636,76 @@ describe('chromium features', () => {
     it('does not crash', (done) => {
       const w = new BrowserWindow({ show: false });
       w.webContents.once('did-finish-load', () => { done(); });
-      w.webContents.once('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.once('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(__dirname, 'fixtures', 'pages', 'jquery.html'));
+    });
+  });
+
+  describe('navigator.keyboard', () => {
+    afterEach(closeAllWindows);
+
+    it('getLayoutMap() should return a KeyboardLayoutMap object', async () => {
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+      const size = await w.webContents.executeJavaScript(`
+        navigator.keyboard.getLayoutMap().then(map => map.size)
+      `);
+
+      expect(size).to.be.a('number');
+    });
+
+    ifit(process.platform !== 'darwin')('should lock the keyboard', async () => {
+      const w = new BrowserWindow({ show: true });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'modal.html'));
+
+      // Test that without lock, with ESC:
+      // - the window leaves fullscreen
+      // - the dialog is not closed
+      const enterFS1 = once(w, 'enter-full-screen');
+      await w.webContents.executeJavaScript('document.body.requestFullscreen()', true);
+      await enterFS1;
+
+      await w.webContents.executeJavaScript('document.getElementById(\'favDialog\').showModal()', true);
+      const open1 = await w.webContents.executeJavaScript('document.getElementById(\'favDialog\').open');
+      expect(open1).to.be.true();
+
+      w.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+      await setTimeout(1000);
+      await expect(waitUntil(async () => {
+        return await w.webContents.executeJavaScript(
+          'document.getElementById(\'favDialog\').open'
+        );
+      })).to.eventually.be.fulfilled();
+      expect(w.isFullScreen()).to.be.false();
+
+      // Test that with lock, with ESC:
+      // - the window does not leave fullscreen
+      // - the dialog is closed
+      const enterFS2 = once(w, 'enter-full-screen');
+      await w.webContents.executeJavaScript(`
+        document.body.requestFullscreen();
+      `, true);
+      await enterFS2;
+
+      // Request keyboard lock after window has gone fullscreen
+      // otherwise it will result in blink::kKeyboardLockRequestFailedErrorMsg.
+      await w.webContents.executeJavaScript(`
+        navigator.keyboard.lock(['Escape']);
+      `, true);
+
+      await w.webContents.executeJavaScript('document.getElementById(\'favDialog\').showModal()', true);
+      const open2 = await w.webContents.executeJavaScript('document.getElementById(\'favDialog\').open');
+      expect(open2).to.be.true();
+
+      w.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+      await setTimeout(1000);
+      await expect(waitUntil(async () => {
+        const openAfter2 = await w.webContents.executeJavaScript(
+          'document.getElementById(\'favDialog\').open'
+        );
+        return (openAfter2 === false);
+      })).to.eventually.be.fulfilled();
+      expect(w.isFullScreen()).to.be.true();
     });
   });
 
@@ -572,14 +742,14 @@ describe('chromium features', () => {
           }).then(() => done());
         }
       });
-      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.on('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'index.html'));
     });
 
     it('should register for intercepted file scheme', (done) => {
       const customSession = session.fromPartition('intercept-file');
       customSession.protocol.interceptBufferProtocol('file', (request, callback) => {
-        let file = url.parse(request.url).pathname!;
+        let file = new URL(request.url).pathname!;
         if (file[0] === '/' && process.platform === 'win32') file = file.slice(1);
 
         const content = fs.readFileSync(path.normalize(file));
@@ -613,14 +783,14 @@ describe('chromium features', () => {
           });
         }
       });
-      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.on('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'index.html'));
     });
 
     it('should register for custom scheme', (done) => {
       const customSession = session.fromPartition('custom-scheme');
       customSession.protocol.registerFileProtocol(serviceWorkerScheme, (request, callback) => {
-        let file = url.parse(request.url).pathname!;
+        let file = new URL(request.url).pathname!;
         if (file[0] === '/' && process.platform === 'win32') file = file.slice(1);
 
         callback({ path: path.normalize(file) } as any);
@@ -649,7 +819,7 @@ describe('chromium features', () => {
           });
         }
       });
-      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.on('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'custom-scheme-index.html'));
     });
 
@@ -680,8 +850,8 @@ describe('chromium features', () => {
     });
   });
 
-  ifdescribe(features.isFakeLocationProviderEnabled())('navigator.geolocation', () => {
-    it('returns error when permission is denied', async () => {
+  describe('navigator.geolocation', () => {
+    ifit(features.isFakeLocationProviderEnabled())('returns error when permission is denied', async () => {
       const w = new BrowserWindow({
         show: false,
         webPreferences: {
@@ -690,7 +860,7 @@ describe('chromium features', () => {
           contextIsolation: false
         }
       });
-      const message = emittedOnce(w.webContents, 'ipc-message');
+      const message = once(w.webContents, 'ipc-message');
       w.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
         if (permission === 'geolocation') {
           callback(false);
@@ -703,15 +873,146 @@ describe('chromium features', () => {
       expect(channel).to.equal('success', 'unexpected response from geolocation api');
     });
 
-    it('returns position when permission is granted', async () => {
-      const w = new BrowserWindow({ show: false });
+    ifit(!features.isFakeLocationProviderEnabled())('returns position when permission is granted', async () => {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          partition: 'geolocation-spec'
+        }
+      });
+      w.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => {
+        callback(true);
+      });
       await w.loadURL(`file://${fixturesPath}/pages/blank.html`);
       const position = await w.webContents.executeJavaScript(`new Promise((resolve, reject) =>
         navigator.geolocation.getCurrentPosition(
           x => resolve({coords: x.coords, timestamp: x.timestamp}),
-          reject))`);
+          err => reject(new Error(err.message))))`);
       expect(position).to.have.property('coords');
       expect(position).to.have.property('timestamp');
+    });
+  });
+
+  describe('File System API,', () => {
+    afterEach(closeAllWindows);
+    afterEach(() => {
+      session.defaultSession.setPermissionRequestHandler(null);
+    });
+
+    it('allows access by default to reading an OPFS file', async () => {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          partition: 'file-system-spec',
+          contextIsolation: false
+        }
+      });
+
+      await w.loadURL(`file://${fixturesPath}/pages/blank.html`);
+      const result = await w.webContents.executeJavaScript(`
+        new Promise(async (resolve, reject) => {
+          const root = await navigator.storage.getDirectory();
+          const fileHandle = await root.getFileHandle('test', { create: true });
+          const { name, size } = await fileHandle.getFile();
+          resolve({ name, size });
+        }
+      )`, true);
+      expect(result).to.deep.equal({ name: 'test', size: 0 });
+    });
+
+    it('fileHandle.queryPermission by default has permission to read and write to OPFS files', async () => {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          partition: 'file-system-spec',
+          contextIsolation: false
+        }
+      });
+
+      await w.loadURL(`file://${fixturesPath}/pages/blank.html`);
+      const status = await w.webContents.executeJavaScript(`
+        new Promise(async (resolve, reject) => {
+          const root = await navigator.storage.getDirectory();
+          const fileHandle = await root.getFileHandle('test', { create: true });
+          const status = await fileHandle.queryPermission({ mode: 'readwrite' });
+          resolve(status);
+        }
+      )`, true);
+      expect(status).to.equal('granted');
+    });
+
+    it('fileHandle.requestPermission automatically grants permission to read and write to OPFS files', async () => {
+      const w = new BrowserWindow({
+        webPreferences: {
+          nodeIntegration: true,
+          partition: 'file-system-spec',
+          contextIsolation: false
+        }
+      });
+
+      await w.loadURL(`file://${fixturesPath}/pages/blank.html`);
+      const status = await w.webContents.executeJavaScript(`
+        new Promise(async (resolve, reject) => {
+          const root = await navigator.storage.getDirectory();
+          const fileHandle = await root.getFileHandle('test', { create: true });
+          const status = await fileHandle.requestPermission({ mode: 'readwrite' });
+          resolve(status);
+        }
+      )`, true);
+      expect(status).to.equal('granted');
+    });
+
+    it('requests permission when trying to create a writable file handle', (done) => {
+      const writablePath = path.join(fixturesPath, 'file-system', 'test-writable.html');
+      const testFile = path.join(fixturesPath, 'file-system', 'test.txt');
+
+      const w = new BrowserWindow({
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false,
+          sandbox: false
+        }
+      });
+
+      w.webContents.session.setPermissionRequestHandler((wc, permission, callback, details) => {
+        expect(permission).to.equal('fileSystem');
+
+        const { href } = url.pathToFileURL(writablePath);
+        expect(details).to.deep.equal({
+          fileAccessType: 'writable',
+          isDirectory: false,
+          isMainFrame: true,
+          filePath: testFile,
+          requestingUrl: href
+        });
+
+        callback(true);
+      });
+
+      ipcMain.once('did-create-file-handle', async () => {
+        const result = await w.webContents.executeJavaScript(`
+          new Promise((resolve, reject) => {
+            try {
+              const writable = fileHandle.createWritable();
+              resolve(true);
+            } catch {
+              resolve(false);
+            }
+          })
+        `, true);
+        expect(result).to.be.true();
+        done();
+      });
+
+      w.loadFile(writablePath);
+
+      w.webContents.once('did-finish-load', () => {
+        // @ts-expect-error Undocumented testing method.
+        clipboard._writeFilesForTesting([testFile]);
+        w.webContents.paste();
+      });
     });
   });
 
@@ -730,9 +1031,46 @@ describe('chromium features', () => {
 
       appProcess = ChildProcess.spawn(process.execPath, [appPath]);
 
-      const [code] = await emittedOnce(appProcess, 'exit');
+      const [code] = await once(appProcess, 'exit');
       expect(code).to.equal(0);
     });
+
+    itremote('Worker with nodeIntegrationInWorker has access to EventSource', () => {
+      const es = new EventSource('https://example.com');
+      expect(es).to.have.property('url').that.is.a('string');
+      expect(es).to.have.property('readyState').that.is.a('number');
+      expect(es).to.have.property('withCredentials').that.is.a('boolean');
+    });
+
+    itremote('Worker with nodeIntegrationInWorker has access to fetch-dependent interfaces', async (fixtures: string) => {
+      const file = require('node:path').join(fixtures, 'hello.txt');
+      expect(() => {
+        fetch('file://' + file);
+      }).to.not.throw();
+
+      expect(() => {
+        const formData = new FormData();
+        formData.append('username', 'Groucho');
+      }).not.to.throw();
+
+      expect(() => {
+        const request = new Request('https://example.com', {
+          method: 'POST',
+          body: JSON.stringify({ foo: 'bar' })
+        });
+        expect(request.method).to.equal('POST');
+      }).not.to.throw();
+
+      expect(() => {
+        const response = new Response('Hello, world!');
+        expect(response.status).to.equal(200);
+      }).not.to.throw();
+
+      expect(() => {
+        const headers = new Headers();
+        headers.append('Content-Type', 'text/xml');
+      }).not.to.throw();
+    }, [path.join(__dirname, 'fixtures')]);
 
     it('Worker can work', async () => {
       const w = new BrowserWindow({ show: false });
@@ -758,10 +1096,33 @@ describe('chromium features', () => {
     });
 
     it('Worker has node integration with nodeIntegrationInWorker', async () => {
-      const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, nodeIntegrationInWorker: true, contextIsolation: false } });
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          nodeIntegrationInWorker: true,
+          contextIsolation: false
+        }
+      });
+
       w.loadURL(`file://${fixturesPath}/pages/worker.html`);
-      const [, data] = await emittedOnce(ipcMain, 'worker-result');
+      const [, data] = await once(ipcMain, 'worker-result');
       expect(data).to.equal('object function object function');
+    });
+
+    it('Worker has access to fetch-dependent interfaces with nodeIntegrationInWorker', async () => {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          nodeIntegrationInWorker: true,
+          contextIsolation: false
+        }
+      });
+
+      w.loadURL(`file://${fixturesPath}/pages/worker-fetch.html`);
+      const [, data] = await once(ipcMain, 'worker-fetch-result');
+      expect(data).to.equal('function function function function function');
     });
 
     describe('SharedWorker', () => {
@@ -823,15 +1184,14 @@ describe('chromium features', () => {
           res.end(`body:${body}`);
         });
       });
-      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-      serverUrl = `http://localhost:${(server.address() as any).port}`;
+      serverUrl = (await listen(server)).url;
     });
     after(async () => {
       server.close();
       await closeAllWindows();
     });
 
-    [true, false].forEach((isSandboxEnabled) =>
+    for (const isSandboxEnabled of [true, false]) {
       describe(`sandbox=${isSandboxEnabled}`, () => {
         it('posts data in the same window', async () => {
           const w = new BrowserWindow({
@@ -843,7 +1203,7 @@ describe('chromium features', () => {
 
           await w.loadFile(path.join(fixturesPath, 'pages', 'form-with-data.html'));
 
-          const loadPromise = emittedOnce(w.webContents, 'did-finish-load');
+          const loadPromise = once(w.webContents, 'did-finish-load');
 
           w.webContents.executeJavaScript(`
             const form = document.querySelector('form')
@@ -867,7 +1227,7 @@ describe('chromium features', () => {
 
           await w.loadFile(path.join(fixturesPath, 'pages', 'form-with-data.html'));
 
-          const windowCreatedPromise = emittedOnce(app, 'browser-window-created');
+          const windowCreatedPromise = once(app, 'browser-window-created') as Promise<[any, BrowserWindow]>;
 
           w.webContents.executeJavaScript(`
             const form = document.querySelector('form')
@@ -881,8 +1241,8 @@ describe('chromium features', () => {
           const res = await newWin.webContents.executeJavaScript('document.body.innerText');
           expect(res).to.equal('body:greeting=hello');
         });
-      })
-    );
+      });
+    }
   });
 
   describe('window.open', () => {
@@ -899,7 +1259,7 @@ describe('chromium features', () => {
 
         defer(() => { w.close(); });
 
-        const promise = emittedOnce(app, 'browser-window-created');
+        const promise = once(app, 'browser-window-created') as Promise<[any, BrowserWindow]>;
         w.loadFile(path.join(fixturesPath, 'pages', 'window-open.html'));
         const [, newWindow] = await promise;
         expect(newWindow.isVisible()).to.equal(true);
@@ -935,7 +1295,7 @@ describe('chromium features', () => {
       w.webContents.executeJavaScript(`
         { b = window.open('devtools://devtools/bundled/inspector.html', '', 'nodeIntegration=no,show=no'); null }
       `);
-      const [, contents] = await emittedOnce(app, 'web-contents-created');
+      const [, contents] = await once(app, 'web-contents-created') as [any, WebContents];
       const typeofProcessGlobal = await contents.executeJavaScript('typeof process');
       expect(typeofProcessGlobal).to.equal('undefined');
     });
@@ -946,7 +1306,7 @@ describe('chromium features', () => {
       w.webContents.executeJavaScript(`
         { b = window.open('about:blank', '', 'nodeIntegration=no,show=no'); null }
       `);
-      const [, contents] = await emittedOnce(app, 'web-contents-created');
+      const [, contents] = await once(app, 'web-contents-created') as [any, WebContents];
       const typeofProcessGlobal = await contents.executeJavaScript('typeof process');
       expect(typeofProcessGlobal).to.equal('undefined');
     });
@@ -955,7 +1315,7 @@ describe('chromium features', () => {
     ifit(process.platform !== 'win32' || process.arch !== 'arm64')('disables JavaScript when it is disabled on the parent window', async () => {
       const w = new BrowserWindow({ show: true, webPreferences: { nodeIntegration: true } });
       w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
-      const windowUrl = require('url').format({
+      const windowUrl = require('node:url').format({
         pathname: `${fixturesPath}/pages/window-no-javascript.html`,
         protocol: 'file',
         slashes: true
@@ -963,28 +1323,28 @@ describe('chromium features', () => {
       w.webContents.executeJavaScript(`
         { b = window.open(${JSON.stringify(windowUrl)}, '', 'javascript=no,show=no'); null }
       `);
-      const [, contents] = await emittedOnce(app, 'web-contents-created');
-      await emittedOnce(contents, 'did-finish-load');
+      const [, contents] = await once(app, 'web-contents-created') as [any, WebContents];
+      await once(contents, 'did-finish-load');
       // Click link on page
       contents.sendInputEvent({ type: 'mouseDown', clickCount: 1, x: 1, y: 1 });
       contents.sendInputEvent({ type: 'mouseUp', clickCount: 1, x: 1, y: 1 });
-      const [, window] = await emittedOnce(app, 'browser-window-created');
+      const [, window] = await once(app, 'browser-window-created') as [any, BrowserWindow];
       const preferences = window.webContents.getLastWebPreferences();
-      expect(preferences.javascript).to.be.false();
+      expect(preferences!.javascript).to.be.false();
     });
 
     it('defines a window.location getter', async () => {
       let targetURL: string;
       if (process.platform === 'win32') {
-        targetURL = `file:///${fixturesPath.replace(/\\/g, '/')}/pages/base-page.html`;
+        targetURL = `file:///${fixturesPath.replaceAll('\\', '/')}/pages/base-page.html`;
       } else {
         targetURL = `file://${fixturesPath}/pages/base-page.html`;
       }
       const w = new BrowserWindow({ show: false });
       w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       w.webContents.executeJavaScript(`{ b = window.open(${JSON.stringify(targetURL)}); null }`);
-      const [, window] = await emittedOnce(app, 'browser-window-created');
-      await emittedOnce(window.webContents, 'did-finish-load');
+      const [, window] = await once(app, 'browser-window-created') as [any, BrowserWindow];
+      await once(window.webContents, 'did-finish-load');
       expect(await w.webContents.executeJavaScript('b.location.href')).to.equal(targetURL);
     });
 
@@ -992,30 +1352,30 @@ describe('chromium features', () => {
       const w = new BrowserWindow({ show: false });
       w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       w.webContents.executeJavaScript('{ b = window.open("about:blank"); null }');
-      const [, { webContents }] = await emittedOnce(app, 'browser-window-created');
-      await emittedOnce(webContents, 'did-finish-load');
+      const [, { webContents }] = await once(app, 'browser-window-created') as [any, BrowserWindow];
+      await once(webContents, 'did-finish-load');
       // When it loads, redirect
       w.webContents.executeJavaScript(`{ b.location = ${JSON.stringify(`file://${fixturesPath}/pages/base-page.html`)}; null }`);
-      await emittedOnce(webContents, 'did-finish-load');
+      await once(webContents, 'did-finish-load');
     });
 
     it('defines a window.location.href setter', async () => {
       const w = new BrowserWindow({ show: false });
       w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       w.webContents.executeJavaScript('{ b = window.open("about:blank"); null }');
-      const [, { webContents }] = await emittedOnce(app, 'browser-window-created');
-      await emittedOnce(webContents, 'did-finish-load');
+      const [, { webContents }] = await once(app, 'browser-window-created') as [any, BrowserWindow];
+      await once(webContents, 'did-finish-load');
       // When it loads, redirect
       w.webContents.executeJavaScript(`{ b.location.href = ${JSON.stringify(`file://${fixturesPath}/pages/base-page.html`)}; null }`);
-      await emittedOnce(webContents, 'did-finish-load');
+      await once(webContents, 'did-finish-load');
     });
 
     it('open a blank page when no URL is specified', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL('about:blank');
       w.webContents.executeJavaScript('{ b = window.open(); null }');
-      const [, { webContents }] = await emittedOnce(app, 'browser-window-created');
-      await emittedOnce(webContents, 'did-finish-load');
+      const [, { webContents }] = await once(app, 'browser-window-created') as [any, BrowserWindow];
+      await once(webContents, 'did-finish-load');
       expect(await w.webContents.executeJavaScript('b.location.href')).to.equal('about:blank');
     });
 
@@ -1023,8 +1383,8 @@ describe('chromium features', () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL('about:blank');
       w.webContents.executeJavaScript('{ b = window.open(\'\'); null }');
-      const [, { webContents }] = await emittedOnce(app, 'browser-window-created');
-      await emittedOnce(webContents, 'did-finish-load');
+      const [, { webContents }] = await once(app, 'browser-window-created') as [any, BrowserWindow];
+      await once(webContents, 'did-finish-load');
       expect(await w.webContents.executeJavaScript('b.location.href')).to.equal('about:blank');
     });
 
@@ -1041,8 +1401,30 @@ describe('chromium features', () => {
       expect(frameName).to.equal('__proto__');
     });
 
-    // TODO(nornagon): I'm not sure this ... ever was correct?
-    it.skip('inherit options of parent window', async () => {
+    it('works when used in conjunction with the vm module', async () => {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false
+        }
+      });
+
+      await w.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
+
+      const { contextObject } = await w.webContents.executeJavaScript(`(async () => {
+        const vm = require('node:vm');
+        const contextObject = { count: 1, type: 'gecko' };
+        window.open('');
+        vm.runInNewContext('count += 1; type = "chameleon";', contextObject);
+        return { contextObject };
+      })()`);
+
+      expect(contextObject).to.deep.equal({ count: 2, type: 'chameleon' });
+    });
+
+    // FIXME(nornagon): I'm not sure this ... ever was correct?
+    xit('inherit options of parent window', async () => {
       const w = new BrowserWindow({ show: false, width: 123, height: 456 });
       w.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       const url = `file://${fixturesPath}/pages/window-open-size.html`;
@@ -1075,6 +1457,23 @@ describe('chromium features', () => {
         return { eventData: e.data }
       })()`);
       expect(eventData).to.equal('size: 350 450');
+    });
+
+    it('loads preload script after setting opener to null', async () => {
+      const w = new BrowserWindow({ show: false });
+      w.webContents.setWindowOpenHandler(() => ({
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: {
+            preload: path.join(fixturesPath, 'module', 'preload.js')
+          }
+        }
+      }));
+      w.loadURL('about:blank');
+      w.webContents.executeJavaScript('window.child = window.open(); child.opener = null');
+      const [, { webContents }] = await once(app, 'browser-window-created');
+      const [{ message }] = await once(webContents, 'console-message');
+      expect(message).to.equal('{"require":"function","module":"object","exports":"object","process":"object","Buffer":"function"}');
     });
 
     it('disables the <webview> tag when it is disabled on the parent window', async () => {
@@ -1125,7 +1524,7 @@ describe('chromium features', () => {
         }
       });
       w.loadFile(path.join(fixturesPath, 'pages', 'window-opener.html'));
-      const [, channel, opener] = await emittedOnce(w.webContents, 'ipc-message');
+      const [, channel, opener] = await once(w.webContents, 'ipc-message');
       expect(channel).to.equal('opener');
       expect(opener).to.equal(null);
     });
@@ -1189,16 +1588,13 @@ describe('chromium features', () => {
       let serverURL: string;
       let server: any;
 
-      beforeEach((done) => {
+      beforeEach(async () => {
         server = http.createServer((req, res) => {
           res.writeHead(200);
           const filePath = path.join(fixturesPath, 'pages', 'window-opener-targetOrigin.html');
           res.end(fs.readFileSync(filePath, 'utf8'));
         });
-        server.listen(0, '127.0.0.1', () => {
-          serverURL = `http://127.0.0.1:${server.address().port}`;
-          done();
-        });
+        serverURL = (await listen(server)).url;
       });
 
       afterEach(() => {
@@ -1217,6 +1613,226 @@ describe('chromium features', () => {
     });
   });
 
+  describe('Storage Access API', () => {
+    afterEach(closeAllWindows);
+    afterEach(() => {
+      session.defaultSession.setPermissionCheckHandler(null);
+      session.defaultSession.setPermissionRequestHandler(null);
+    });
+
+    it('can determine if a permission is granted for "storage-access"', async () => {
+      session.defaultSession.setPermissionCheckHandler(
+        (_wc, permission) => permission === 'storage-access'
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'a.html'));
+
+      const permission = await w.webContents.executeJavaScript(`
+        navigator.permissions.query({ name: 'storage-access' })
+          .then(permission => permission.state).catch(err => err.message);
+      `, true);
+
+      expect(permission).to.eq('granted');
+    });
+
+    it('can determine if a permission is denied for "storage-access"', async () => {
+      session.defaultSession.setPermissionCheckHandler(
+        (_wc, permission) => permission !== 'storage-access'
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'a.html'));
+
+      const permission = await w.webContents.executeJavaScript(`
+        navigator.permissions.query({ name: 'storage-access' })
+          .then(permission => permission.state).catch(err => err.message);
+      `, true);
+
+      expect(permission).to.eq('denied');
+    });
+
+    it('can determine if a permission is granted for "top-level-storage-access"', async () => {
+      session.defaultSession.setPermissionCheckHandler(
+        (_wc, permission) => permission === 'top-level-storage-access'
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'a.html'));
+
+      const permission = await w.webContents.executeJavaScript(`
+        navigator.permissions.query({
+          name: 'top-level-storage-access',
+          requestedOrigin: "https://www.example.com",
+        }).then(permission => permission.state).catch(err => err.message);
+      `, true);
+
+      expect(permission).to.eq('granted');
+    });
+
+    it('can determine if a permission is denied for "top-level-storage-access"', async () => {
+      session.defaultSession.setPermissionCheckHandler(
+        (_wc, permission) => permission !== 'top-level-storage-access'
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'a.html'));
+
+      const permission = await w.webContents.executeJavaScript(`
+        navigator.permissions.query({
+          name: 'top-level-storage-access',
+          requestedOrigin: "https://www.example.com",
+        }).then(permission => permission.state).catch(err => err.message);
+      `, true);
+
+      expect(permission).to.eq('denied');
+    });
+
+    it('can grant a permission request for "top-level-storage-access"', async () => {
+      session.defaultSession.setPermissionRequestHandler(
+        (_wc, permission, callback) => {
+          callback(permission === 'top-level-storage-access');
+        }
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'button.html'));
+
+      // requestStorageAccessFor returns a Promise that fulfills with undefined
+      // if the access to third-party cookies was granted and rejects if access was denied.
+      const permission = await w.webContents.executeJavaScript(`
+        new Promise((resolve, reject) => {
+          const button = document.getElementById('button');
+          button.addEventListener("click", () => {
+            document.requestStorageAccessFor('https://myfakesite').then(
+              (res) => { resolve('granted') },
+              (err) => { resolve('denied') },
+            );
+          });
+          button.click();
+        });
+      `, true);
+
+      expect(permission).to.eq('granted');
+    });
+
+    it('can deny a permission request for "top-level-storage-access"', async () => {
+      session.defaultSession.setPermissionRequestHandler(
+        (_wc, permission, callback) => {
+          callback(permission !== 'top-level-storage-access');
+        }
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'button.html'));
+
+      // requestStorageAccessFor returns a Promise that fulfills with undefined
+      // if the access to third-party cookies was granted and rejects if access was denied.
+      const permission = await w.webContents.executeJavaScript(`
+        new Promise((resolve, reject) => {
+          const button = document.getElementById('button');
+          button.addEventListener("click", () => {
+            document.requestStorageAccessFor('https://myfakesite').then(
+              (res) => { resolve('granted') },
+              (err) => { resolve('denied') },
+            );
+          });
+          button.click();
+        });
+      `, true);
+
+      expect(permission).to.eq('denied');
+    });
+  });
+
+  describe('IdleDetection', () => {
+    afterEach(closeAllWindows);
+    afterEach(() => {
+      session.defaultSession.setPermissionCheckHandler(null);
+      session.defaultSession.setPermissionRequestHandler(null);
+    });
+
+    it('can grant a permission request', async () => {
+      session.defaultSession.setPermissionRequestHandler(
+        (_wc, permission, callback) => {
+          callback(permission === 'idle-detection');
+        }
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'button.html'));
+      const permission = await w.webContents.executeJavaScript(`
+        new Promise((resolve, reject) => {
+          const button = document.getElementById('button');
+          button.addEventListener("click", async () => {
+            const permission = await IdleDetector.requestPermission();
+            resolve(permission);
+          });
+          button.click();
+        });
+      `, true);
+
+      expect(permission).to.eq('granted');
+    });
+
+    it('can deny a permission request', async () => {
+      session.defaultSession.setPermissionRequestHandler(
+        (_wc, permission, callback) => {
+          callback(permission !== 'idle-detection');
+        }
+      );
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'button.html'));
+      const permission = await w.webContents.executeJavaScript(`
+        new Promise((resolve, reject) => {
+          const button = document.getElementById('button');
+          button.addEventListener("click", async () => {
+            const permission = await IdleDetector.requestPermission();
+            resolve(permission);
+          });
+          button.click();
+        });
+      `, true);
+
+      expect(permission).to.eq('denied');
+    });
+
+    it('can allow the IdleDetector to start', async () => {
+      session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+        return permission === 'idle-detection';
+      });
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+      const result = await w.webContents.executeJavaScript(`
+        const detector = new IdleDetector({ threshold: 60000 });
+        detector.start().then(() => {
+          return 'success';
+        }).catch(e => e.message);
+      `, true);
+
+      expect(result).to.eq('success');
+    });
+
+    it('can prevent the IdleDetector from starting', async () => {
+      session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+        return permission !== 'idle-detection';
+      });
+
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+      const result = await w.webContents.executeJavaScript(`
+        const detector = new IdleDetector({ threshold: 60000 });
+        detector.start().then(() => {
+          console.log('success')
+        }).catch(e => e.message);
+      `, true);
+
+      expect(result).to.eq('Idle detection permission denied');
+    });
+  });
+
   describe('navigator.mediaDevices', () => {
     afterEach(closeAllWindows);
     afterEach(() => {
@@ -1231,12 +1847,46 @@ describe('chromium features', () => {
       expect(labels.some((l: any) => l)).to.be.true();
     });
 
-    it('does not return labels of enumerated devices when permission denied', async () => {
+    it('does not return labels of enumerated devices when all permission denied', async () => {
       session.defaultSession.setPermissionCheckHandler(() => false);
       const w = new BrowserWindow({ show: false });
       w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
       const labels = await w.webContents.executeJavaScript('navigator.mediaDevices.enumerateDevices().then(ds => ds.map(d => d.label))');
       expect(labels.some((l: any) => l)).to.be.false();
+    });
+
+    it('does not return labels of enumerated audio devices when permission denied', async () => {
+      session.defaultSession.setPermissionCheckHandler((wc, permission, origin, { mediaType }) => {
+        return permission !== 'media' || mediaType !== 'audio';
+      });
+      const w = new BrowserWindow({ show: false });
+      w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+      const devices = await w.webContents.executeJavaScript(
+        `navigator.mediaDevices.enumerateDevices().then(ds => ds.map(d => {
+          return ({ label: d.label, kind: d.kind })
+        }));
+      `);
+      const audioDevices = devices.filter((d: any) => d.kind === 'audioinput');
+      expect(audioDevices.some((d: any) => d.label)).to.be.false();
+      const videoDevices = devices.filter((d: any) => d.kind === 'videoinput');
+      expect(videoDevices.some((d: any) => d.label)).to.be.true();
+    });
+
+    it('does not return labels of enumerated video devices when permission denied', async () => {
+      session.defaultSession.setPermissionCheckHandler((wc, permission, origin, { mediaType }) => {
+        return permission !== 'media' || mediaType !== 'video';
+      });
+      const w = new BrowserWindow({ show: false });
+      w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+      const devices = await w.webContents.executeJavaScript(
+        `navigator.mediaDevices.enumerateDevices().then(ds => ds.map(d => {
+          return ({ label: d.label, kind: d.kind })
+        }));
+      `);
+      const audioDevices = devices.filter((d: any) => d.kind === 'audioinput');
+      expect(audioDevices.some((d: any) => d.label)).to.be.true();
+      const videoDevices = devices.filter((d: any) => d.kind === 'videoinput');
+      expect(videoDevices.some((d: any) => d.label)).to.be.false();
     });
 
     it('returns the same device ids across reloads', async () => {
@@ -1250,8 +1900,9 @@ describe('chromium features', () => {
         }
       });
       w.loadFile(path.join(fixturesPath, 'pages', 'media-id-reset.html'));
-      const [, firstDeviceIds] = await emittedOnce(ipcMain, 'deviceIds');
-      const [, secondDeviceIds] = await emittedOnce(ipcMain, 'deviceIds', () => w.webContents.reload());
+      const [, firstDeviceIds] = await once(ipcMain, 'deviceIds');
+      w.webContents.reload();
+      const [, secondDeviceIds] = await once(ipcMain, 'deviceIds');
       expect(firstDeviceIds).to.deep.equal(secondDeviceIds);
     });
 
@@ -1266,16 +1917,17 @@ describe('chromium features', () => {
         }
       });
       w.loadFile(path.join(fixturesPath, 'pages', 'media-id-reset.html'));
-      const [, firstDeviceIds] = await emittedOnce(ipcMain, 'deviceIds');
+      const [, firstDeviceIds] = await once(ipcMain, 'deviceIds');
       await ses.clearStorageData({ storages: ['cookies'] });
-      const [, secondDeviceIds] = await emittedOnce(ipcMain, 'deviceIds', () => w.webContents.reload());
+      w.webContents.reload();
+      const [, secondDeviceIds] = await once(ipcMain, 'deviceIds');
       expect(firstDeviceIds).to.not.deep.equal(secondDeviceIds);
     });
 
     it('provides a securityOrigin to the request handler', async () => {
       session.defaultSession.setPermissionRequestHandler(
         (wc, permission, callback, details) => {
-          if (details.securityOrigin !== undefined) {
+          if ((details as MediaAccessPermissionRequest).securityOrigin !== undefined) {
             callback(true);
           } else {
             callback(false);
@@ -1301,7 +1953,7 @@ describe('chromium features', () => {
     it('fails with "not supported" for getDisplayMedia', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
-      const { ok, err } = await w.webContents.executeJavaScript('navigator.mediaDevices.getDisplayMedia({video: true}).then(s => ({ok: true}), e => ({ok: false, err: e.message}))');
+      const { ok, err } = await w.webContents.executeJavaScript('navigator.mediaDevices.getDisplayMedia({video: true}).then(s => ({ok: true}), e => ({ok: false, err: e.message}))', true);
       expect(ok).to.be.false();
       expect(err).to.equal('Not supported');
     });
@@ -1429,12 +2081,11 @@ describe('chromium features', () => {
       let contents: WebContents;
       before(() => {
         protocol.registerFileProtocol(protocolName, (request, callback) => {
-          const parsedUrl = url.parse(request.url);
+          const parsedUrl = new URL(request.url);
           let filename;
           switch (parsedUrl.pathname) {
             case '/localStorage' : filename = 'local_storage.html'; break;
             case '/sessionStorage' : filename = 'session_storage.html'; break;
-            case '/WebSQL' : filename = 'web_sql.html'; break;
             case '/indexedDB' : filename = 'indexed_db.html'; break;
             case '/cookie' : filename = 'cookie.html'; break;
             default : filename = '';
@@ -1448,47 +2099,40 @@ describe('chromium features', () => {
       });
 
       beforeEach(() => {
-        contents = (webContents as any).create({
+        contents = (webContents as typeof ElectronInternal.WebContents).create({
           nodeIntegration: true,
           contextIsolation: false
         });
       });
 
       afterEach(() => {
-        (contents as any).destroy();
+        contents.destroy();
         contents = null as any;
       });
 
       it('cannot access localStorage', async () => {
-        const response = emittedOnce(ipcMain, 'local-storage-response');
+        const response = once(ipcMain, 'local-storage-response');
         contents.loadURL(protocolName + '://host/localStorage');
         const [, error] = await response;
         expect(error).to.equal('Failed to read the \'localStorage\' property from \'Window\': Access is denied for this document.');
       });
 
       it('cannot access sessionStorage', async () => {
-        const response = emittedOnce(ipcMain, 'session-storage-response');
+        const response = once(ipcMain, 'session-storage-response');
         contents.loadURL(`${protocolName}://host/sessionStorage`);
         const [, error] = await response;
         expect(error).to.equal('Failed to read the \'sessionStorage\' property from \'Window\': Access is denied for this document.');
       });
 
-      it('cannot access WebSQL database', async () => {
-        const response = emittedOnce(ipcMain, 'web-sql-response');
-        contents.loadURL(`${protocolName}://host/WebSQL`);
-        const [, error] = await response;
-        expect(error).to.equal('Failed to execute \'openDatabase\' on \'Window\': Access to the WebDatabase API is denied in this context.');
-      });
-
       it('cannot access indexedDB', async () => {
-        const response = emittedOnce(ipcMain, 'indexed-db-response');
+        const response = once(ipcMain, 'indexed-db-response');
         contents.loadURL(`${protocolName}://host/indexedDB`);
         const [, error] = await response;
         expect(error).to.equal('Failed to execute \'open\' on \'IDBFactory\': access to the Indexed Database API is denied in this context.');
       });
 
       it('cannot access cookie', async () => {
-        const response = emittedOnce(ipcMain, 'cookie-response');
+        const response = once(ipcMain, 'cookie-response');
         contents.loadURL(`${protocolName}://host/cookie`);
         const [, error] = await response;
         expect(error).to.equal('Failed to set the \'cookie\' property on \'Document\': Access is denied for this document.');
@@ -1499,7 +2143,7 @@ describe('chromium features', () => {
       let server: http.Server;
       let serverUrl: string;
       let serverCrossSiteUrl: string;
-      before((done) => {
+      before(async () => {
         server = http.createServer((req, res) => {
           const respond = () => {
             if (req.url === '/redirect-cross-site') {
@@ -1512,13 +2156,10 @@ describe('chromium features', () => {
               res.end();
             }
           };
-          setTimeout(respond, 0);
+          setTimeout().then(respond);
         });
-        server.listen(0, '127.0.0.1', () => {
-          serverUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-          serverCrossSiteUrl = `http://localhost:${(server.address() as AddressInfo).port}`;
-          done();
-        });
+        serverUrl = (await listen(server)).url;
+        serverCrossSiteUrl = serverUrl.replace('127.0.0.1', 'localhost');
       });
 
       after(() => {
@@ -1535,7 +2176,7 @@ describe('chromium features', () => {
             ...extraPreferences
           });
           let redirected = false;
-          w.webContents.on('crashed', () => {
+          w.webContents.on('render-process-gone', () => {
             expect.fail('renderer crashed / was killed');
           });
           w.webContents.on('did-redirect-navigation', (event, url) => {
@@ -1551,173 +2192,8 @@ describe('chromium features', () => {
       testLocalStorageAfterXSiteRedirect('after a cross-site redirect in sandbox mode', { sandbox: true });
     });
 
-    describe('enableWebSQL webpreference', () => {
-      const origin = `${standardScheme}://fake-host`;
-      const filePath = path.join(fixturesPath, 'pages', 'storage', 'web_sql.html');
-      const sqlPartition = 'web-sql-preference-test';
-      const sqlSession = session.fromPartition(sqlPartition);
-      const securityError = 'An attempt was made to break through the security policy of the user agent.';
-      let contents: WebContents, w: BrowserWindow;
-
-      before(() => {
-        sqlSession.protocol.registerFileProtocol(standardScheme, (request, callback) => {
-          callback({ path: filePath });
-        });
-      });
-
-      after(() => {
-        sqlSession.protocol.unregisterProtocol(standardScheme);
-      });
-
-      afterEach(async () => {
-        if (contents) {
-          (contents as any).destroy();
-          contents = null as any;
-        }
-        await closeAllWindows();
-        (w as any) = null;
-      });
-
-      it('default value allows websql', async () => {
-        contents = (webContents as any).create({
-          session: sqlSession,
-          nodeIntegration: true,
-          contextIsolation: false
-        });
-        contents.loadURL(origin);
-        const [, error] = await emittedOnce(ipcMain, 'web-sql-response');
-        expect(error).to.be.null();
-      });
-
-      it('when set to false can disallow websql', async () => {
-        contents = (webContents as any).create({
-          session: sqlSession,
-          nodeIntegration: true,
-          enableWebSQL: false,
-          contextIsolation: false
-        });
-        contents.loadURL(origin);
-        const [, error] = await emittedOnce(ipcMain, 'web-sql-response');
-        expect(error).to.equal(securityError);
-      });
-
-      it('when set to false does not disable indexedDB', async () => {
-        contents = (webContents as any).create({
-          session: sqlSession,
-          nodeIntegration: true,
-          enableWebSQL: false,
-          contextIsolation: false
-        });
-        contents.loadURL(origin);
-        const [, error] = await emittedOnce(ipcMain, 'web-sql-response');
-        expect(error).to.equal(securityError);
-        const dbName = 'random';
-        const result = await contents.executeJavaScript(`
-          new Promise((resolve, reject) => {
-            try {
-              let req = window.indexedDB.open('${dbName}');
-              req.onsuccess = (event) => {
-                let db = req.result;
-                resolve(db.name);
-              }
-              req.onerror = (event) => { resolve(event.target.code); }
-            } catch (e) {
-              resolve(e.message);
-            }
-          });
-        `);
-        expect(result).to.equal(dbName);
-      });
-
-      it('child webContents can override when the embedder has allowed websql', async () => {
-        w = new BrowserWindow({
-          show: false,
-          webPreferences: {
-            nodeIntegration: true,
-            webviewTag: true,
-            session: sqlSession,
-            contextIsolation: false
-          }
-        });
-        w.webContents.loadURL(origin);
-        const [, error] = await emittedOnce(ipcMain, 'web-sql-response');
-        expect(error).to.be.null();
-        const webviewResult = emittedOnce(ipcMain, 'web-sql-response');
-        await w.webContents.executeJavaScript(`
-          new Promise((resolve, reject) => {
-            const webview = new WebView();
-            webview.setAttribute('src', '${origin}');
-            webview.setAttribute('webpreferences', 'enableWebSQL=0,contextIsolation=no');
-            webview.setAttribute('partition', '${sqlPartition}');
-            webview.setAttribute('nodeIntegration', 'on');
-            document.body.appendChild(webview);
-            webview.addEventListener('dom-ready', () => resolve());
-          });
-        `);
-        const [, childError] = await webviewResult;
-        expect(childError).to.equal(securityError);
-      });
-
-      it('child webContents cannot override when the embedder has disallowed websql', async () => {
-        w = new BrowserWindow({
-          show: false,
-          webPreferences: {
-            nodeIntegration: true,
-            enableWebSQL: false,
-            webviewTag: true,
-            session: sqlSession,
-            contextIsolation: false
-          }
-        });
-        w.webContents.loadURL('data:text/html,<html></html>');
-        const webviewResult = emittedOnce(ipcMain, 'web-sql-response');
-        await w.webContents.executeJavaScript(`
-          new Promise((resolve, reject) => {
-            const webview = new WebView();
-            webview.setAttribute('src', '${origin}');
-            webview.setAttribute('webpreferences', 'enableWebSQL=1,contextIsolation=no');
-            webview.setAttribute('partition', '${sqlPartition}');
-            webview.setAttribute('nodeIntegration', 'on');
-            document.body.appendChild(webview);
-            webview.addEventListener('dom-ready', () => resolve());
-          });
-        `);
-        const [, childError] = await webviewResult;
-        expect(childError).to.equal(securityError);
-      });
-
-      it('child webContents can use websql when the embedder has allowed websql', async () => {
-        w = new BrowserWindow({
-          show: false,
-          webPreferences: {
-            nodeIntegration: true,
-            webviewTag: true,
-            session: sqlSession,
-            contextIsolation: false
-          }
-        });
-        w.webContents.loadURL(origin);
-        const [, error] = await emittedOnce(ipcMain, 'web-sql-response');
-        expect(error).to.be.null();
-        const webviewResult = emittedOnce(ipcMain, 'web-sql-response');
-        await w.webContents.executeJavaScript(`
-          new Promise((resolve, reject) => {
-            const webview = new WebView();
-            webview.setAttribute('src', '${origin}');
-            webview.setAttribute('webpreferences', 'enableWebSQL=1,contextIsolation=no');
-            webview.setAttribute('partition', '${sqlPartition}');
-            webview.setAttribute('nodeIntegration', 'on');
-            document.body.appendChild(webview);
-            webview.addEventListener('dom-ready', () => resolve());
-          });
-        `);
-        const [, childError] = await webviewResult;
-        expect(childError).to.be.null();
-      });
-    });
-
     describe('DOM storage quota increase', () => {
-      ['localStorage', 'sessionStorage'].forEach((storageName) => {
+      for (const storageName of ['localStorage', 'sessionStorage']) {
         it(`allows saving at least 40MiB in ${storageName}`, async () => {
           const w = new BrowserWindow({ show: false });
           w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
@@ -1739,7 +2215,7 @@ describe('chromium features', () => {
           // failed to detect a real problem (perhaps related to DOM storage data caching)
           // wherein calling `getItem` immediately after `setItem` would appear to work
           // but then later (e.g. next tick) it would not.
-          await delay(1);
+          await setTimeout(1);
           try {
             const storedLength = await w.webContents.executeJavaScript(`${storageName}.getItem(${JSON.stringify(testKeyName)}).length`);
             expect(storedLength).to.equal(length);
@@ -1763,7 +2239,7 @@ describe('chromium features', () => {
             }
           })()).to.eventually.be.rejected();
         });
-      });
+      }
     });
 
     describe('persistent storage', () => {
@@ -1780,7 +2256,7 @@ describe('chromium features', () => {
 
   ifdescribe(features.isPDFViewerEnabled())('PDF Viewer', () => {
     const pdfSource = url.format({
-      pathname: path.join(__dirname, 'fixtures', 'cat.pdf').replace(/\\/g, '/'),
+      pathname: path.join(__dirname, 'fixtures', 'cat.pdf').replaceAll('\\', '/'),
       protocol: 'file',
       slashes: true
     });
@@ -1789,22 +2265,22 @@ describe('chromium features', () => {
       const w = new BrowserWindow({ show: false });
 
       w.loadURL(pdfSource);
-      await emittedOnce(w.webContents, 'did-finish-load');
+      await once(w.webContents, 'did-finish-load');
     });
 
     it('opens when loading a pdf resource as top level navigation', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL(pdfSource);
-      const [, contents] = await emittedOnce(app, 'web-contents-created');
-      await emittedOnce(contents, 'did-navigate');
+      const [, contents] = await once(app, 'web-contents-created') as [any, WebContents];
+      await once(contents, 'did-navigate');
       expect(contents.getURL()).to.equal('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html');
     });
 
     it('opens when loading a pdf resource in a iframe', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadFile(path.join(__dirname, 'fixtures', 'pages', 'pdf-in-iframe.html'));
-      const [, contents] = await emittedOnce(app, 'web-contents-created');
-      await emittedOnce(contents, 'did-navigate');
+      const [, contents] = await once(app, 'web-contents-created') as [any, WebContents];
+      await once(contents, 'did-navigate');
       expect(contents.getURL()).to.equal('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html');
     });
   });
@@ -1815,13 +2291,13 @@ describe('chromium features', () => {
         const w = new BrowserWindow({ show: false });
         await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
         // History should have current page by now.
-        expect((w.webContents as any).length()).to.equal(1);
+        expect(w.webContents.navigationHistory.length()).to.equal(1);
 
-        const waitCommit = emittedOnce(w.webContents, 'navigation-entry-committed');
+        const waitCommit = once(w.webContents, 'navigation-entry-committed');
         w.webContents.executeJavaScript('window.history.pushState({}, "")');
         await waitCommit;
         // Initial page + pushed state.
-        expect((w.webContents as any).length()).to.equal(2);
+        expect(w.webContents.navigationHistory.length()).to.equal(2);
       });
     });
 
@@ -1830,18 +2306,18 @@ describe('chromium features', () => {
         const w = new BrowserWindow({ show: false });
         w.loadURL('data:text/html,<iframe sandbox="allow-scripts"></iframe>');
         await Promise.all([
-          emittedOnce(w.webContents, 'navigation-entry-committed'),
-          emittedOnce(w.webContents, 'did-frame-navigate'),
-          emittedOnce(w.webContents, 'did-navigate')
+          once(w.webContents, 'navigation-entry-committed'),
+          once(w.webContents, 'did-frame-navigate'),
+          once(w.webContents, 'did-navigate')
         ]);
 
         w.webContents.executeJavaScript('window.history.pushState(1, "")');
         await Promise.all([
-          emittedOnce(w.webContents, 'navigation-entry-committed'),
-          emittedOnce(w.webContents, 'did-navigate-in-page')
+          once(w.webContents, 'navigation-entry-committed'),
+          once(w.webContents, 'did-navigate-in-page')
         ]);
 
-        (w.webContents as any).once('navigation-entry-committed', () => {
+        w.webContents.once('navigation-entry-committed' as any, () => {
           expect.fail('Unexpected navigation-entry-committed');
         });
         w.webContents.once('did-navigate-in-page', () => {
@@ -1849,31 +2325,34 @@ describe('chromium features', () => {
         });
         await w.webContents.mainFrame.frames[0].executeJavaScript('window.history.back()');
         expect(await w.webContents.executeJavaScript('window.history.state')).to.equal(1);
-        expect((w.webContents as any).getActiveIndex()).to.equal(1);
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(1);
       });
     });
   });
 
-  describe('chrome://media-internals', () => {
-    it('loads the page successfully', async () => {
-      const w = new BrowserWindow({ show: false });
-      w.loadURL('chrome://media-internals');
-      const pageExists = await w.webContents.executeJavaScript(
-        "window.hasOwnProperty('chrome') && window.chrome.hasOwnProperty('send')"
-      );
-      expect(pageExists).to.be.true();
-    });
-  });
+  describe('chrome:// pages', () => {
+    const urls = [
+      'chrome://accessibility',
+      'chrome://gpu',
+      'chrome://media-internals',
+      'chrome://tracing',
+      'chrome://webrtc-internals',
+      'chrome://process-internals'
+    ];
 
-  describe('chrome://webrtc-internals', () => {
-    it('loads the page successfully', async () => {
-      const w = new BrowserWindow({ show: false });
-      w.loadURL('chrome://webrtc-internals');
-      const pageExists = await w.webContents.executeJavaScript(
-        "window.hasOwnProperty('chrome') && window.chrome.hasOwnProperty('send')"
-      );
-      expect(pageExists).to.be.true();
-    });
+    for (const url of urls) {
+      describe(url, () => {
+        it('loads the page successfully', async () => {
+          const w = new BrowserWindow({ show: false });
+          await w.loadURL(url);
+          const host = url.substring('chrome://'.length);
+          const pageExists = await w.webContents.executeJavaScript(
+            `window.hasOwnProperty('chrome') && window.location.host === '${host}'`
+          );
+          expect(pageExists).to.be.true();
+        });
+      });
+    }
   });
 
   describe('document.hasFocus', () => {
@@ -1884,7 +2363,7 @@ describe('chromium features', () => {
       await w1.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
       await w2.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
       await w3.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
-      expect(webContents.getFocusedWebContents().id).to.equal(w2.webContents.id);
+      expect(webContents.getFocusedWebContents()?.id).to.equal(w2.webContents.id);
       let focus = false;
       focus = await w1.webContents.executeJavaScript(
         'document.hasFocus()'
@@ -1901,6 +2380,30 @@ describe('chromium features', () => {
     });
   });
 
+  // https://developer.mozilla.org/en-US/docs/Web/API/NetworkInformation
+  describe('navigator.connection', () => {
+    it('returns the correct value', async () => {
+      const w = new BrowserWindow({ show: false });
+
+      w.webContents.session.enableNetworkEmulation({
+        latency: 500,
+        downloadThroughput: 6400,
+        uploadThroughput: 6400
+      });
+
+      await w.loadURL(`file://${fixturesPath}/pages/blank.html`);
+      const rtt = await w.webContents.executeJavaScript('navigator.connection.rtt');
+      expect(rtt).to.be.a('number');
+
+      const downlink = await w.webContents.executeJavaScript('navigator.connection.downlink');
+      expect(downlink).to.be.a('number');
+
+      const effectiveTypes = ['slow-2g', '2g', '3g', '4g'];
+      const effectiveType = await w.webContents.executeJavaScript('navigator.connection.effectiveType');
+      expect(effectiveTypes).to.include(effectiveType);
+    });
+  });
+
   describe('navigator.userAgentData', () => {
     // These tests are done on an http server because navigator.userAgentData
     // requires a secure context.
@@ -1911,8 +2414,7 @@ describe('chromium features', () => {
         res.setHeader('Content-Type', 'text/html');
         res.end('');
       });
-      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-      serverUrl = `http://localhost:${(server.address() as any).port}`;
+      serverUrl = (await listen(server)).url;
     });
     after(() => {
       server.close();
@@ -2003,7 +2505,8 @@ describe('chromium features', () => {
     });
   });
 
-  ifdescribe(process.platform !== 'win32' && process.platform !== 'linux')('webgl', () => {
+  // This is intentionally disabled on arm macs: https://chromium-review.googlesource.com/c/chromium/src/+/4143761
+  ifdescribe(process.platform === 'darwin' && process.arch !== 'arm64')('webgl', () => {
     it('can be gotten as context in canvas', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL('about:blank');
@@ -2032,9 +2535,9 @@ describe('chromium features', () => {
   describe('websockets', () => {
     it('has user agent', async () => {
       const server = http.createServer();
-      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-      const port = (server.address() as AddressInfo).port;
-      const wss = new ws.Server({ server: server });
+      defer(() => server.close());
+      const { port } = await listen(server);
+      const wss = new ws.Server({ server });
       const finished = new Promise<string | undefined>((resolve, reject) => {
         wss.on('error', reject);
         wss.on('connection', (ws, upgradeReq) => {
@@ -2056,8 +2559,7 @@ describe('chromium features', () => {
         res.end('test');
       });
       defer(() => server.close());
-      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-      const port = (server.address() as AddressInfo).port;
+      const { port } = await listen(server);
       const w = new BrowserWindow({ show: false });
       w.loadURL(`file://${fixturesPath}/pages/blank.html`);
       const x = await w.webContents.executeJavaScript(`
@@ -2120,6 +2622,26 @@ describe('chromium features', () => {
           window.alert({ toString: null });
         }).to.throw('Cannot convert object to primitive value');
       });
+
+      it('shows a message box', async () => {
+        const w = new BrowserWindow({ show: false });
+        w.loadURL('about:blank');
+        const p = once(w.webContents, '-run-dialog');
+        w.webContents.executeJavaScript('alert("hello")', true);
+        const [info] = await p;
+        expect(info.frame).to.equal(w.webContents.mainFrame);
+        expect(info.messageText).to.equal('hello');
+        expect(info.dialogType).to.equal('alert');
+      });
+
+      it('does not crash if a webContents is destroyed while an alert is showing', async () => {
+        const w = new BrowserWindow({ show: false });
+        w.loadURL('about:blank');
+        const p = once(w.webContents, '-run-dialog');
+        w.webContents.executeJavaScript('alert("hello")', true);
+        await p;
+        w.webContents.close();
+      });
     });
 
     describe('window.confirm(message, title)', () => {
@@ -2127,6 +2649,160 @@ describe('chromium features', () => {
         expect(() => {
           (window.confirm as any)({ toString: null }, 'title');
         }).to.throw('Cannot convert object to primitive value');
+      });
+
+      it('shows a message box', async () => {
+        const w = new BrowserWindow({ show: false });
+        w.loadURL('about:blank');
+        const p = once(w.webContents, '-run-dialog');
+        const resultPromise = w.webContents.executeJavaScript('confirm("hello")', true);
+        const [info, cb] = await p;
+        expect(info.frame).to.equal(w.webContents.mainFrame);
+        expect(info.messageText).to.equal('hello');
+        expect(info.dialogType).to.equal('confirm');
+        cb(true, '');
+        const result = await resultPromise;
+        expect(result).to.be.true();
+      });
+    });
+
+    describe('safeDialogs web preference', () => {
+      const originalShowMessageBox = dialog.showMessageBox;
+      afterEach(() => {
+        dialog.showMessageBox = originalShowMessageBox;
+        if (protocol.isProtocolHandled('https')) protocol.unhandle('https');
+        if (protocol.isProtocolHandled('file')) protocol.unhandle('file');
+      });
+      it('does not show the checkbox if not enabled', async () => {
+        const w = new BrowserWindow({ show: false, webPreferences: { safeDialogs: false } });
+        w.loadURL('about:blank');
+        // 1. The first alert() doesn't show the safeDialogs message.
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        let recordedOpts: MessageBoxOptions | undefined;
+        dialog.showMessageBox = (bw, opts?: MessageBoxOptions) => {
+          recordedOpts = opts;
+          return Promise.resolve({ response: 0, checkboxChecked: false });
+        };
+        await w.webContents.executeJavaScript('alert("hi")');
+        expect(recordedOpts?.checkboxLabel).to.equal('');
+      });
+
+      it('is respected', async () => {
+        const w = new BrowserWindow({ show: false, webPreferences: { safeDialogs: true } });
+        w.loadURL('about:blank');
+        // 1. The first alert() doesn't show the safeDialogs message.
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        // 2. The second alert() shows the message with a checkbox. Respond that we checked it.
+        let recordedOpts: MessageBoxOptions | undefined;
+        dialog.showMessageBox = (bw, opts?: MessageBoxOptions) => {
+          recordedOpts = opts;
+          return Promise.resolve({ response: 0, checkboxChecked: true });
+        };
+        await w.webContents.executeJavaScript('alert("hi")');
+        expect(recordedOpts?.checkboxLabel).to.be.a('string').with.length.above(0);
+
+        // 3. The third alert() shouldn't show a dialog.
+        dialog.showMessageBox = () => Promise.reject(new Error('unexpected showMessageBox'));
+        await w.webContents.executeJavaScript('alert("hi")');
+      });
+
+      it('shows the safeDialogMessage', async () => {
+        const w = new BrowserWindow({ show: false, webPreferences: { safeDialogs: true, safeDialogsMessage: 'foo bar' } });
+        w.loadURL('about:blank');
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+        await w.webContents.executeJavaScript('alert("hi")');
+        let recordedOpts: MessageBoxOptions | undefined;
+        dialog.showMessageBox = (bw, opts?: MessageBoxOptions) => {
+          recordedOpts = opts;
+          return Promise.resolve({ response: 0, checkboxChecked: true });
+        };
+        await w.webContents.executeJavaScript('alert("hi")');
+        expect(recordedOpts?.checkboxLabel).to.equal('foo bar');
+      });
+
+      it('has persistent state across navigations', async () => {
+        const w = new BrowserWindow({ show: false, webPreferences: { safeDialogs: true } });
+        w.loadURL('about:blank');
+        // 1. The first alert() doesn't show the safeDialogs message.
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        // 2. The second alert() shows the message with a checkbox. Respond that we checked it.
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: true });
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        // 3. The third alert() shouldn't show a dialog.
+        dialog.showMessageBox = () => Promise.reject(new Error('unexpected showMessageBox'));
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        // 4. After navigating to the same origin, message boxes should still be hidden.
+        w.loadURL('about:blank');
+        await w.webContents.executeJavaScript('alert("hi")');
+      });
+
+      it('is separated by origin', async () => {
+        protocol.handle('https', () => new Response(''));
+        const w = new BrowserWindow({ show: false, webPreferences: { safeDialogs: true } });
+        w.loadURL('https://example1');
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+        await w.webContents.executeJavaScript('alert("hi")');
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: true });
+        await w.webContents.executeJavaScript('alert("hi")');
+        dialog.showMessageBox = () => Promise.reject(new Error('unexpected showMessageBox'));
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        // A different origin is allowed to show message boxes after navigation.
+        w.loadURL('https://example2');
+        let dialogWasShown = false;
+        dialog.showMessageBox = () => {
+          dialogWasShown = true;
+          return Promise.resolve({ response: 0, checkboxChecked: false });
+        };
+        await w.webContents.executeJavaScript('alert("hi")');
+        expect(dialogWasShown).to.be.true();
+
+        // Navigating back to the first origin means alerts are blocked again.
+        w.loadURL('https://example1');
+        dialog.showMessageBox = () => Promise.reject(new Error('unexpected showMessageBox'));
+        await w.webContents.executeJavaScript('alert("hi")');
+      });
+
+      it('treats different file: paths as different origins', async () => {
+        protocol.handle('file', () => new Response(''));
+        const w = new BrowserWindow({ show: false, webPreferences: { safeDialogs: true } });
+        w.loadURL('file:///path/1');
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+        await w.webContents.executeJavaScript('alert("hi")');
+        dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: true });
+        await w.webContents.executeJavaScript('alert("hi")');
+        dialog.showMessageBox = () => Promise.reject(new Error('unexpected showMessageBox'));
+        await w.webContents.executeJavaScript('alert("hi")');
+
+        w.loadURL('file:///path/2');
+        let dialogWasShown = false;
+        dialog.showMessageBox = () => {
+          dialogWasShown = true;
+          return Promise.resolve({ response: 0, checkboxChecked: false });
+        };
+        await w.webContents.executeJavaScript('alert("hi")');
+        expect(dialogWasShown).to.be.true();
+      });
+    });
+    describe('disableDialogs web preference', () => {
+      const originalShowMessageBox = dialog.showMessageBox;
+      afterEach(() => {
+        dialog.showMessageBox = originalShowMessageBox;
+        if (protocol.isProtocolHandled('https')) protocol.unhandle('https');
+      });
+      it('is respected', async () => {
+        const w = new BrowserWindow({ show: false, webPreferences: { disableDialogs: true } });
+        w.loadURL('about:blank');
+        dialog.showMessageBox = () => Promise.reject(new Error('unexpected message box'));
+        await w.webContents.executeJavaScript('alert("hi")');
       });
     });
   });
@@ -2154,14 +2830,11 @@ describe('chromium features', () => {
     });
   });
 
-  ifdescribe(features.isTtsEnabled())('SpeechSynthesis', () => {
-    before(function () {
-      // TODO(nornagon): this is broken on CI, it triggers:
-      // [FATAL:speech_synthesis.mojom-shared.h(237)] The outgoing message will
-      // trigger VALIDATION_ERROR_UNEXPECTED_NULL_POINTER at the receiving side
-      // (null text in SpeechSynthesisUtterance struct).
-      this.skip();
-    });
+  // FIXME(nornagon): this is broken on CI, it triggers:
+  // [FATAL:speech_synthesis.mojom-shared.h(237)] The outgoing message will
+  // trigger VALIDATION_ERROR_UNEXPECTED_NULL_POINTER at the receiving side
+  // (null text in SpeechSynthesisUtterance struct).
+  describe('SpeechSynthesis', () => {
     itremote('should emit lifecycle events', async () => {
       const sentence = `long sentence which will take at least a few seconds to
           utter so that it's possible to pause and resume before the end`;
@@ -2189,6 +2862,38 @@ describe('chromium features', () => {
       expect(speechSynthesis.paused).to.be.false();
 
       await new Promise((resolve) => { utter.onend = resolve; });
+    });
+  });
+
+  describe('devtools', () => {
+    it('fetch colors.css', async () => {
+      // <link href="devtools://theme/colors.css?sets=ui,chrome" rel="stylesheet">
+      const w = new BrowserWindow({ show: false });
+      const devtools = new BrowserWindow({ show: false });
+      const devToolsOpened = once(w.webContents, 'devtools-opened');
+
+      w.webContents.setDevToolsWebContents(devtools.webContents);
+      w.webContents.openDevTools();
+      await devToolsOpened;
+      expect(devtools.webContents.getURL().startsWith('devtools://devtools')).to.be.true();
+
+      const result = await devtools.webContents.executeJavaScript(`
+        document.body.querySelector('link[href*=\\'//theme/colors.css\\']')?.getAttribute('href');
+      `);
+      expect(result.startsWith('devtools://theme/colors.css?sets=ui,chrome')).to.be.true();
+      const colorAccentResult = await devtools.webContents.executeJavaScript(`
+        const style = getComputedStyle(document.body);
+        style.getPropertyValue('--color-accent');
+      `);
+      expect(colorAccentResult).to.not.equal('');
+      const colorAppMenuHighlightSeverityLow = await devtools.webContents.executeJavaScript(`
+        style.getPropertyValue('--color-app-menu-highlight-severity-low');
+      `);
+      expect(colorAppMenuHighlightSeverityLow).to.not.equal('');
+      const rgb = await devtools.webContents.executeJavaScript(`
+        style.getPropertyValue('--color-accent-rgb');
+      `);
+      expect(rgb).to.equal('');
     });
   });
 });
@@ -2240,22 +2945,23 @@ describe('font fallback', () => {
 });
 
 describe('iframe using HTML fullscreen API while window is OS-fullscreened', () => {
-  const fullscreenChildHtml = promisify(fs.readFile)(
+  const fullscreenChildHtml = fs.promises.readFile(
     path.join(fixturesPath, 'pages', 'fullscreen-oopif.html')
   );
-  let w: BrowserWindow, server: http.Server;
+  let w: BrowserWindow;
+  let server: http.Server;
+  let crossSiteUrl: string;
 
-  before(() => {
+  beforeEach(async () => {
     server = http.createServer(async (_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.write(await fullscreenChildHtml);
       res.end();
     });
 
-    server.listen(8989, '127.0.0.1');
-  });
+    const serverUrl = (await listen(server)).url;
+    crossSiteUrl = serverUrl.replace('127.0.0.1', 'localhost');
 
-  beforeEach(() => {
     w = new BrowserWindow({
       show: true,
       fullscreen: true,
@@ -2274,9 +2980,9 @@ describe('iframe using HTML fullscreen API while window is OS-fullscreened', () 
   });
 
   ifit(process.platform !== 'darwin')('can fullscreen from out-of-process iframes (non-macOS)', async () => {
-    const fullscreenChange = emittedOnce(ipcMain, 'fullscreenChange');
+    const fullscreenChange = once(ipcMain, 'fullscreenChange');
     const html =
-      '<iframe style="width: 0" frameborder=0 src="http://localhost:8989" allowfullscreen></iframe>';
+      `<iframe style="width: 0" frameborder=0 src="${crossSiteUrl}" allowfullscreen></iframe>`;
     w.loadURL(`data:text/html,${html}`);
     await fullscreenChange;
 
@@ -2289,19 +2995,19 @@ describe('iframe using HTML fullscreen API while window is OS-fullscreened', () 
       "document.querySelector('iframe').contentWindow.postMessage('exitFullscreen', '*')"
     );
 
-    await delay(500);
-
-    const width = await w.webContents.executeJavaScript(
-      "document.querySelector('iframe').offsetWidth"
-    );
-    expect(width).to.equal(0);
+    await expect(waitUntil(async () => {
+      const width = await w.webContents.executeJavaScript(
+        "document.querySelector('iframe').offsetWidth"
+      );
+      return width === 0;
+    })).to.eventually.be.fulfilled();
   });
 
   ifit(process.platform === 'darwin')('can fullscreen from out-of-process iframes (macOS)', async () => {
-    await emittedOnce(w, 'enter-full-screen');
-    const fullscreenChange = emittedOnce(ipcMain, 'fullscreenChange');
+    await once(w, 'enter-full-screen');
+    const fullscreenChange = once(ipcMain, 'fullscreenChange');
     const html =
-      '<iframe style="width: 0" frameborder=0 src="http://localhost:8989" allowfullscreen></iframe>';
+      `<iframe style="width: 0" frameborder=0 src="${crossSiteUrl}" allowfullscreen></iframe>`;
     w.loadURL(`data:text/html,${html}`);
     await fullscreenChange;
 
@@ -2313,22 +3019,25 @@ describe('iframe using HTML fullscreen API while window is OS-fullscreened', () 
     await w.webContents.executeJavaScript(
       "document.querySelector('iframe').contentWindow.postMessage('exitFullscreen', '*')"
     );
-    await emittedOnce(w.webContents, 'leave-html-full-screen');
+    await once(w.webContents, 'leave-html-full-screen');
 
-    const width = await w.webContents.executeJavaScript(
-      "document.querySelector('iframe').offsetWidth"
-    );
-    expect(width).to.equal(0);
+    await expect(waitUntil(async () => {
+      const width = await w.webContents.executeJavaScript(
+        "document.querySelector('iframe').offsetWidth"
+      );
+      return width === 0;
+    })).to.eventually.be.fulfilled();
 
     w.setFullScreen(false);
-    await emittedOnce(w, 'leave-full-screen');
+    await once(w, 'leave-full-screen');
   });
 
-  // TODO(jkleinsc) fix this flaky test on WOA
-  ifit(process.platform !== 'win32' || process.arch !== 'arm64')('can fullscreen from in-process iframes', async () => {
-    if (process.platform === 'darwin') await emittedOnce(w, 'enter-full-screen');
+  // TODO: Re-enable for windows on GitHub Actions,
+  // fullscreen tests seem to hang on GHA specifically
+  it('can fullscreen from in-process iframes', async () => {
+    if (process.platform === 'darwin') await once(w, 'enter-full-screen');
 
-    const fullscreenChange = emittedOnce(ipcMain, 'fullscreenChange');
+    const fullscreenChange = once(ipcMain, 'fullscreenChange');
     w.loadFile(path.join(fixturesPath, 'pages', 'fullscreen-ipif.html'));
     await fullscreenChange;
 
@@ -2472,14 +3181,58 @@ describe('navigator.serial', () => {
   });
 });
 
-describe('navigator.clipboard', () => {
+describe('window.getScreenDetails', () => {
   let w: BrowserWindow;
   before(async () => {
     w = new BrowserWindow({
-      webPreferences: {
-        enableBlinkFeatures: 'Serial'
+      show: false
+    });
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+  });
+
+  after(closeAllWindows);
+  afterEach(() => {
+    session.defaultSession.setPermissionRequestHandler(null);
+  });
+
+  const getScreenDetails: any = () => {
+    return w.webContents.executeJavaScript('window.getScreenDetails().then(data => data.screens).catch(err => err.message)', true);
+  };
+
+  it('returns screens when a PermissionRequestHandler is not defined', async () => {
+    const screens = await getScreenDetails();
+    expect(screens).to.not.equal('Read permission denied.');
+  });
+
+  it('returns an error when permission denied', async () => {
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+      if (permission === 'window-management') {
+        callback(false);
+      } else {
+        callback(true);
       }
     });
+    const screens = await getScreenDetails();
+    expect(screens).to.equal('Permission denied.');
+  });
+
+  it('returns screens when permission is granted', async () => {
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+      if (permission === 'window-management') {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+    const screens = await getScreenDetails();
+    expect(screens).to.not.equal('Permission denied.');
+  });
+});
+
+describe('navigator.clipboard.read', () => {
+  let w: BrowserWindow;
+  before(async () => {
+    w = new BrowserWindow();
     await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
   });
 
@@ -2496,7 +3249,7 @@ describe('navigator.clipboard', () => {
 
   it('returns clipboard contents when a PermissionRequestHandler is not defined', async () => {
     const clipboard = await readClipboard();
-    expect(clipboard).to.not.equal('Read permission denied.');
+    expect(clipboard).to.not.contain('Read permission denied.');
   });
 
   it('returns an error when permission denied', async () => {
@@ -2508,7 +3261,7 @@ describe('navigator.clipboard', () => {
       }
     });
     const clipboard = await readClipboard();
-    expect(clipboard).to.equal('Read permission denied.');
+    expect(clipboard).to.contain('Read permission denied.');
   });
 
   it('returns clipboard contents when permission is granted', async () => {
@@ -2520,7 +3273,202 @@ describe('navigator.clipboard', () => {
       }
     });
     const clipboard = await readClipboard();
-    expect(clipboard).to.not.equal('Read permission denied.');
+    expect(clipboard).to.not.contain('Read permission denied.');
+  });
+});
+
+describe('navigator.clipboard.write', () => {
+  let w: BrowserWindow;
+  before(async () => {
+    w = new BrowserWindow();
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+  });
+
+  const writeClipboard: any = () => {
+    return w.webContents.executeJavaScript(`
+      navigator.clipboard.writeText('Hello World!').catch(err => err.message);
+    `, true);
+  };
+
+  after(closeAllWindows);
+  afterEach(() => {
+    session.defaultSession.setPermissionRequestHandler(null);
+  });
+
+  it('returns clipboard contents when a PermissionRequestHandler is not defined', async () => {
+    const clipboard = await writeClipboard();
+    expect(clipboard).to.be.undefined();
+  });
+
+  it('returns an error when permission denied', async () => {
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+      if (permission === 'clipboard-sanitized-write') {
+        callback(false);
+      } else {
+        callback(true);
+      }
+    });
+    const clipboard = await writeClipboard();
+    expect(clipboard).to.contain('Write permission denied.');
+  });
+
+  it('returns clipboard contents when permission is granted', async () => {
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+      if (permission === 'clipboard-sanitized-write') {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+    const clipboard = await writeClipboard();
+    expect(clipboard).to.be.undefined();
+  });
+});
+
+describe('paste execCommand', () => {
+  const readClipboard: any = (w: BrowserWindow) => {
+    return w.webContents.executeJavaScript(`
+      new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          resolve('');
+        }, 2000);
+        document.addEventListener('paste', (event) => {
+          clearTimeout(timeout);
+          event.preventDefault();
+          let paste = event.clipboardData.getData("text");
+          resolve(paste);
+        });
+        document.execCommand('paste');
+      });
+    `, true);
+  };
+
+  let ses: Electron.Session;
+  beforeEach(() => {
+    ses = session.fromPartition(`paste-execCommand-${Math.random()}`);
+  });
+
+  afterEach(() => {
+    ses.setPermissionCheckHandler(null);
+    closeAllWindows();
+  });
+
+  it('is disabled by default', async () => {
+    const w: BrowserWindow = new BrowserWindow({});
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    const text = 'Sync Clipboard Disabled by default';
+    clipboard.write({
+      text
+    });
+    const paste = await readClipboard(w);
+    expect(paste).to.be.empty();
+    expect(clipboard.readText()).to.equal(text);
+  });
+
+  it('does not execute with default permissions', async () => {
+    const w: BrowserWindow = new BrowserWindow({
+      webPreferences: {
+        enableDeprecatedPaste: true,
+        session: ses
+      }
+    });
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    const text = 'Sync Clipboard Disabled by default permissions';
+    clipboard.write({
+      text
+    });
+    const paste = await readClipboard(w);
+    expect(paste).to.be.empty();
+    expect(clipboard.readText()).to.equal(text);
+  });
+
+  it('does not execute with permission denied', async () => {
+    const w: BrowserWindow = new BrowserWindow({
+      webPreferences: {
+        enableDeprecatedPaste: true,
+        session: ses
+      }
+    });
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    ses.setPermissionCheckHandler((webContents, permission) => {
+      if (permission === 'deprecated-sync-clipboard-read') {
+        return false;
+      }
+      return true;
+    });
+    const text = 'Sync Clipboard Disabled by permission denied';
+    clipboard.write({
+      text
+    });
+    const paste = await readClipboard(w);
+    expect(paste).to.be.empty();
+    expect(clipboard.readText()).to.equal(text);
+  });
+
+  it('can trigger paste event when permission is granted', async () => {
+    const w: BrowserWindow = new BrowserWindow({
+      webPreferences: {
+        enableDeprecatedPaste: true,
+        session: ses
+      }
+    });
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    ses.setPermissionCheckHandler((webContents, permission) => {
+      if (permission === 'deprecated-sync-clipboard-read') {
+        return true;
+      }
+      return false;
+    });
+    const text = 'Sync Clipboard Test';
+    clipboard.write({
+      text
+    });
+    const paste = await readClipboard(w);
+    expect(paste).to.equal(text);
+  });
+
+  it('can trigger paste event when permission is granted for child windows', async () => {
+    const w: BrowserWindow = new BrowserWindow({
+      webPreferences: {
+        session: ses
+      }
+    });
+    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    w.webContents.setWindowOpenHandler(details => {
+      if (details.url === 'about:blank') {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            webPreferences: {
+              enableDeprecatedPaste: true,
+              session: ses
+            }
+          }
+        };
+      } else {
+        return {
+          action: 'deny'
+        };
+      }
+    });
+    ses.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+      if (requestingOrigin === `${webContents?.opener?.origin}/` &&
+          details.requestingUrl === 'about:blank' &&
+          permission === 'deprecated-sync-clipboard-read') {
+        return true;
+      }
+      return false;
+    });
+    const childPromise = once(w.webContents, 'did-create-window') as Promise<[BrowserWindow, Electron.DidCreateWindowDetails]>;
+    w.webContents.executeJavaScript('window.open("about:blank")', true);
+    const [childWindow] = await childPromise;
+    expect(childWindow.webContents.opener).to.equal(w.webContents.mainFrame);
+    const text = 'Sync Clipboard Test for Child Window';
+    clipboard.write({
+      text
+    });
+    const paste = await readClipboard(childWindow);
+    expect(paste).to.equal(text);
   });
 });
 
@@ -2539,7 +3487,7 @@ ifdescribe((process.platform !== 'linux' || app.isUnityRunning()))('navigator.se
   async function waitForBadgeCount (value: number) {
     let badgeCount = app.getBadgeCount();
     while (badgeCount !== value) {
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await setTimeout(10);
       badgeCount = app.getBadgeCount();
     }
     return badgeCount;
@@ -2611,7 +3559,7 @@ ifdescribe((process.platform !== 'linux' || app.isUnityRunning()))('navigator.se
           }).then(() => done());
         }
       });
-      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.on('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'badge-index.html'), { search: '?setBadge' });
     });
 
@@ -2632,7 +3580,7 @@ ifdescribe((process.platform !== 'linux' || app.isUnityRunning()))('navigator.se
           }).then(() => done());
         }
       });
-      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.webContents.on('render-process-gone', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'badge-index.html'), { search: '?clearBadge' });
     });
   });
@@ -2672,8 +3620,7 @@ describe('navigator.hid', () => {
       res.setHeader('Content-Type', 'text/html');
       res.end('<body>');
     });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    serverUrl = `http://localhost:${(server.address() as any).port}`;
+    serverUrl = (await listen(server)).url;
   });
 
   const requestDevices: any = () => {
@@ -2714,7 +3661,7 @@ describe('navigator.hid', () => {
     let haveDevices = false;
     let selectFired = false;
     w.webContents.session.on('select-hid-device', (event, details, callback) => {
-      expect(details.frame).to.have.ownProperty('frameTreeNodeId').that.is.a('number');
+      expect(details.frame).to.have.property('frameTreeNodeId').that.is.a('number');
       selectFired = true;
       if (details.deviceList.length > 0) {
         haveDevices = true;
@@ -2735,9 +3682,9 @@ describe('navigator.hid', () => {
       const grantedDevices = await w.webContents.executeJavaScript('navigator.hid.getDevices()');
       expect(grantedDevices).to.not.be.empty();
       w.loadURL(serverUrl);
-      const [,,,,, frameProcessId, frameRoutingId] = await emittedOnce(w.webContents, 'did-frame-navigate');
+      const [,,,,, frameProcessId, frameRoutingId] = await once(w.webContents, 'did-frame-navigate');
       const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
-      expect(frame).to.not.be.empty();
+      expect(!!frame).to.be.true();
       if (frame) {
         const grantedDevicesOnNewPage = await frame.executeJavaScript('navigator.hid.getDevices()');
         expect(grantedDevicesOnNewPage).to.be.empty();
@@ -2757,6 +3704,7 @@ describe('navigator.hid', () => {
             haveDevices = true;
             return true;
           }
+          return false;
         });
         if (foundDevice) {
           callback(foundDevice.deviceId);
@@ -2804,6 +3752,7 @@ describe('navigator.hid', () => {
               return true;
             }
           }
+          return false;
         });
       }
       callback();
@@ -2871,13 +3820,18 @@ describe('navigator.usb', () => {
       res.setHeader('Content-Type', 'text/html');
       res.end('<body>');
     });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    serverUrl = `http://localhost:${(server.address() as any).port}`;
+    serverUrl = (await listen(server)).url;
   });
 
   const requestDevices: any = () => {
     return w.webContents.executeJavaScript(`
       navigator.usb.requestDevice({filters: []}).then(device => device.toString()).catch(err => err.toString());
+    `, true);
+  };
+
+  const getDevices: any = () => {
+    return w.webContents.executeJavaScript(`
+      navigator.usb.getDevices().then(devices => devices.map(device => device.toString())).catch(err => err.toString());
     `, true);
   };
 
@@ -2887,10 +3841,23 @@ describe('navigator.usb', () => {
     server.close();
     closeAllWindows();
   });
+
   afterEach(() => {
     session.defaultSession.setPermissionCheckHandler(null);
     session.defaultSession.setDevicePermissionHandler(null);
     session.defaultSession.removeAllListeners('select-usb-device');
+  });
+
+  it('does not crash when using in-memory partitions', async () => {
+    const sesWin = new BrowserWindow({
+      webPreferences: {
+        partition: 'test-partition'
+      }
+    });
+
+    await sesWin.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    const devices = await getDevices();
+    expect(devices).to.be.an('array').that.is.empty();
   });
 
   it('does not return a device if select-usb-device event is not defined', async () => {
@@ -2915,7 +3882,7 @@ describe('navigator.usb', () => {
     let haveDevices = false;
     let selectFired = false;
     w.webContents.session.on('select-usb-device', (event, details, callback) => {
-      expect(details.frame).to.have.ownProperty('frameTreeNodeId').that.is.a('number');
+      expect(details.frame).to.have.property('frameTreeNodeId').that.is.a('number');
       selectFired = true;
       if (details.deviceList.length > 0) {
         haveDevices = true;
@@ -2936,9 +3903,9 @@ describe('navigator.usb', () => {
       const grantedDevices = await w.webContents.executeJavaScript('navigator.usb.getDevices()');
       expect(grantedDevices).to.not.be.empty();
       w.loadURL(serverUrl);
-      const [,,,,, frameProcessId, frameRoutingId] = await emittedOnce(w.webContents, 'did-frame-navigate');
+      const [,,,,, frameProcessId, frameRoutingId] = await once(w.webContents, 'did-frame-navigate');
       const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
-      expect(frame).to.not.be.empty();
+      expect(!!frame).to.be.true();
       if (frame) {
         const grantedDevicesOnNewPage = await frame.executeJavaScript('navigator.usb.getDevices()');
         expect(grantedDevicesOnNewPage).to.be.empty();
@@ -2958,6 +3925,7 @@ describe('navigator.usb', () => {
             haveDevices = true;
             return true;
           }
+          return false;
         });
         if (foundDevice) {
           callback(foundDevice.deviceId);
@@ -2999,7 +3967,7 @@ describe('navigator.usb', () => {
     if (haveDevices) {
       const grantedDevices = await w.webContents.executeJavaScript('navigator.usb.getDevices()');
       if (grantedDevices.length > 0) {
-        const deletedDevice = await w.webContents.executeJavaScript(`
+        const deletedDevice: Electron.USBDevice = await w.webContents.executeJavaScript(`
           navigator.usb.getDevices().then(devices => {
             devices[0].forget();
             return {
@@ -3011,7 +3979,7 @@ describe('navigator.usb', () => {
         `);
         const grantedDevices2 = await w.webContents.executeJavaScript('navigator.usb.getDevices()');
         expect(grantedDevices2.length).to.be.lessThan(grantedDevices.length);
-        if (deletedDevice.name !== '' && deletedDevice.productId && deletedDevice.vendorId) {
+        if (deletedDevice.productName !== '' && deletedDevice.productId && deletedDevice.vendorId) {
           expect(deletedDeviceFromEvent).to.include(deletedDevice);
         }
       }

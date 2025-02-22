@@ -1,8 +1,9 @@
-const fs = require('fs');
-const path = require('path');
-const webpack = require('webpack');
 const TerserPlugin = require('terser-webpack-plugin');
+const webpack = require('webpack');
 const WrapperPlugin = require('wrapper-webpack-plugin');
+
+const fs = require('node:fs');
+const path = require('node:path');
 
 const electronRoot = path.resolve(__dirname, '../..');
 
@@ -52,20 +53,6 @@ module.exports = ({
     }
 
     const ignoredModules = [];
-
-    if (defines.ENABLE_DESKTOP_CAPTURER === 'false') {
-      ignoredModules.push(
-        '@electron/internal/browser/desktop-capturer',
-        '@electron/internal/browser/api/desktop-capturer',
-        '@electron/internal/renderer/api/desktop-capturer'
-      );
-    }
-
-    if (defines.ENABLE_VIEWS_API === 'false') {
-      ignoredModules.push(
-        '@electron/internal/browser/api/views/image-view.js'
-      );
-    }
 
     const plugins = [];
 

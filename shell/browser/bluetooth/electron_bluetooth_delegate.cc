@@ -9,7 +9,7 @@
 
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "build/build_config.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "device/bluetooth/bluetooth_device.h"
@@ -84,7 +84,7 @@ std::string ElectronBluetoothDelegate::GetDeviceAddress(
     RenderFrameHost* frame,
     const WebBluetoothDeviceId& device_id) {
   NOTIMPLEMENTED();
-  return nullptr;
+  return "";
 }
 
 WebBluetoothDeviceId ElectronBluetoothDelegate::AddScannedDevice(
@@ -113,6 +113,10 @@ void ElectronBluetoothDelegate::RevokeDevicePermissionWebInitiated(
     RenderFrameHost* frame,
     const WebBluetoothDeviceId& device_id) {
   NOTIMPLEMENTED();
+}
+
+bool ElectronBluetoothDelegate::MayUseBluetooth(RenderFrameHost* frame) {
+  return true;
 }
 
 bool ElectronBluetoothDelegate::IsAllowedToAccessService(
@@ -161,7 +165,7 @@ void ElectronBluetoothDelegate::ShowDevicePairPrompt(
     const std::u16string& device_identifier,
     PairPromptCallback callback,
     PairingKind pairing_kind,
-    const absl::optional<std::u16string>& pin) {
+    const std::optional<std::u16string>& pin) {
   auto* web_contents = content::WebContents::FromRenderFrameHost(frame);
   if (web_contents) {
     auto* permission_manager = static_cast<ElectronPermissionManager*>(
@@ -169,8 +173,7 @@ void ElectronBluetoothDelegate::ShowDevicePairPrompt(
 
     v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
     v8::HandleScope scope(isolate);
-    gin_helper::Dictionary details =
-        gin_helper::Dictionary::CreateEmpty(isolate);
+    auto details = gin_helper::Dictionary::CreateEmpty(isolate);
     details.Set("deviceId", device_identifier);
     details.Set("pairingKind", pairing_kind);
     details.SetGetter("frame", frame);
@@ -179,9 +182,9 @@ void ElectronBluetoothDelegate::ShowDevicePairPrompt(
     }
 
     permission_manager->CheckBluetoothDevicePair(
-        details, base::AdaptCallbackForRepeating(base::BindOnce(
-                     &ElectronBluetoothDelegate::OnDevicePairPromptResponse,
-                     weak_factory_.GetWeakPtr(), std::move(callback))));
+        details,
+        base::BindOnce(&ElectronBluetoothDelegate::OnDevicePairPromptResponse,
+                       weak_factory_.GetWeakPtr(), std::move(callback)));
   }
 }
 

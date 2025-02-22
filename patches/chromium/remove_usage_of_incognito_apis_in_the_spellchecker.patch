@@ -9,7 +9,7 @@ change to move more of //chrome spellchecker logic into //components so
 that we can further separate our dependency from //chrome.
 
 diff --git a/chrome/browser/profiles/profile_keyed_service_factory.cc b/chrome/browser/profiles/profile_keyed_service_factory.cc
-index f14db439624e395bd6cd9d10d5aff480e0384293..ec860cd4033ac09f96be031147d70d2ccefb06c8 100644
+index 30a7e6a641e7b17a47fb5c66fb44d3d5899b9e78..85764a533585df0abe398758e4fd510c711de375 100644
 --- a/chrome/browser/profiles/profile_keyed_service_factory.cc
 +++ b/chrome/browser/profiles/profile_keyed_service_factory.cc
 @@ -22,6 +22,9 @@ ProfileKeyedServiceFactory::~ProfileKeyedServiceFactory() = default;
@@ -23,22 +23,23 @@ index f14db439624e395bd6cd9d10d5aff480e0384293..ec860cd4033ac09f96be031147d70d2c
 +#endif
  }
 diff --git a/chrome/browser/profiles/profile_selections.cc b/chrome/browser/profiles/profile_selections.cc
-index e777c85cefe9b4280d48bd5d2ca15b20dea0ef85..1465c3b3168f0d1d62c075815c617193f2a12883 100644
+index 25b15408665dc95702e7f1382fb8e7c0bb493599..bc0bad82ebcdceadc505e912ff27202b452fefab 100644
 --- a/chrome/browser/profiles/profile_selections.cc
 +++ b/chrome/browser/profiles/profile_selections.cc
-@@ -153,6 +153,7 @@ Profile* ProfileSelections::ApplyProfileSelection(Profile* profile) const {
+@@ -132,6 +132,7 @@ ProfileSelection ProfileSelections::GetProfileSelection(
+   }
+ #endif  // BUILDFLAG(IS_CHROMEOS)
  
- ProfileSelection ProfileSelections::GetProfileSelection(
-     Profile* profile) const {
 +#if 0
    // Treat other off the record profiles as Incognito (primary otr) Profiles.
    if (profile->IsRegularProfile() || profile->IsIncognitoProfile() ||
        profile_metrics::GetBrowserProfileType(profile) ==
-@@ -194,6 +195,7 @@ ProfileSelection ProfileSelections::GetProfileSelection(
+@@ -148,6 +149,8 @@ ProfileSelection ProfileSelections::GetProfileSelection(
    }
  
    NOTREACHED();
 +#endif
-   return ProfileSelection::kNone;
++  return ProfileSelection::kNone;
  }
  
+ void ProfileSelections::SetProfileSelectionForRegular(

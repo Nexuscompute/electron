@@ -1,12 +1,12 @@
-import { expect } from 'chai';
-import { nativeTheme, systemPreferences, BrowserWindow, ipcMain } from 'electron/main';
-import * as os from 'os';
-import * as path from 'path';
-import * as semver from 'semver';
+import { nativeTheme, BrowserWindow, ipcMain } from 'electron/main';
 
-import { delay, ifdescribe } from './spec-helpers';
-import { emittedOnce } from './events-helpers';
-import { closeAllWindows } from './window-helpers';
+import { expect } from 'chai';
+
+import { once } from 'node:events';
+import * as path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
+
+import { closeAllWindows } from './lib/window-helpers';
 
 describe('nativeTheme module', () => {
   describe('nativeTheme.shouldUseDarkColors', () => {
@@ -19,7 +19,7 @@ describe('nativeTheme module', () => {
     afterEach(async () => {
       nativeTheme.themeSource = 'system';
       // Wait for any pending events to emit
-      await delay(20);
+      await setTimeout(20);
 
       closeAllWindows();
     });
@@ -36,10 +36,11 @@ describe('nativeTheme module', () => {
     });
 
     it('should emit the "updated" event when it is set and the resulting "shouldUseDarkColors" value changes', async () => {
-      let updatedEmitted = emittedOnce(nativeTheme, 'updated');
+      nativeTheme.themeSource = 'light';
+      let updatedEmitted = once(nativeTheme, 'updated');
       nativeTheme.themeSource = 'dark';
       await updatedEmitted;
-      updatedEmitted = emittedOnce(nativeTheme, 'updated');
+      updatedEmitted = once(nativeTheme, 'updated');
       nativeTheme.themeSource = 'light';
       await updatedEmitted;
     });
@@ -47,24 +48,15 @@ describe('nativeTheme module', () => {
     it('should not emit the "updated" event when it is set and the resulting "shouldUseDarkColors" value is the same', async () => {
       nativeTheme.themeSource = 'dark';
       // Wait a few ticks to allow an async events to flush
-      await delay(20);
+      await setTimeout(20);
       let called = false;
       nativeTheme.once('updated', () => {
         called = true;
       });
       nativeTheme.themeSource = 'dark';
       // Wait a few ticks to allow an async events to flush
-      await delay(20);
+      await setTimeout(20);
       expect(called).to.equal(false);
-    });
-
-    ifdescribe(process.platform === 'darwin' && semver.gte(os.release(), '18.0.0'))('on macOS 10.14', () => {
-      it('should update appLevelAppearance when set', () => {
-        nativeTheme.themeSource = 'dark';
-        expect(systemPreferences.appLevelAppearance).to.equal('dark');
-        nativeTheme.themeSource = 'light';
-        expect(systemPreferences.appLevelAppearance).to.equal('light');
-      });
     });
 
     const getPrefersColorSchemeIsDark = async (w: Electron.BrowserWindow) => {
@@ -82,15 +74,15 @@ describe('nativeTheme module', () => {
           .addEventListener('change', () => require('electron').ipcRenderer.send('theme-change'))
       `);
       const originalSystemIsDark = await getPrefersColorSchemeIsDark(w);
-      let changePromise: Promise<any[]> = emittedOnce(ipcMain, 'theme-change');
+      let changePromise = once(ipcMain, 'theme-change');
       nativeTheme.themeSource = 'dark';
       if (!originalSystemIsDark) await changePromise;
       expect(await getPrefersColorSchemeIsDark(w)).to.equal(true);
-      changePromise = emittedOnce(ipcMain, 'theme-change');
+      changePromise = once(ipcMain, 'theme-change');
       nativeTheme.themeSource = 'light';
       await changePromise;
       expect(await getPrefersColorSchemeIsDark(w)).to.equal(false);
-      changePromise = emittedOnce(ipcMain, 'theme-change');
+      changePromise = once(ipcMain, 'theme-change');
       nativeTheme.themeSource = 'system';
       if (originalSystemIsDark) await changePromise;
       expect(await getPrefersColorSchemeIsDark(w)).to.equal(originalSystemIsDark);
@@ -113,6 +105,12 @@ describe('nativeTheme module', () => {
   describe('nativeTheme.inForcedColorsMode', () => {
     it('returns a boolean', () => {
       expect(nativeTheme.inForcedColorsMode).to.be.a('boolean');
+    });
+  });
+
+  describe('nativeTheme.prefersReducesTransparency', () => {
+    it('returns a boolean', () => {
+      expect(nativeTheme.prefersReducedTransparency).to.be.a('boolean');
     });
   });
 });

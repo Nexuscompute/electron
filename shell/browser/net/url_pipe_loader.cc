@@ -4,8 +4,10 @@
 
 #include "shell/browser/net/url_pipe_loader.h"
 
+#include <string_view>
 #include <utility>
 
+#include "base/task/sequenced_task_runner.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/system/string_data_source.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -25,7 +27,7 @@ URLPipeLoader::URLPipeLoader(
       &URLPipeLoader::NotifyComplete, base::Unretained(this), net::ERR_FAILED));
 
   // PostTask since it might destruct.
-  base::SequencedTaskRunnerHandle::Get()->PostTask(
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(&URLPipeLoader::Start, weak_factory_.GetWeakPtr(), factory,
                      std::move(request), annotation, std::move(upload_data)));
@@ -71,7 +73,7 @@ void URLPipeLoader::OnResponseStarted(
   producer_ = std::make_unique<mojo::DataPipeProducer>(std::move(producer));
 
   client_->OnReceiveResponse(response_head.Clone(), std::move(consumer),
-                             absl::nullopt);
+                             std::nullopt);
 }
 
 void URLPipeLoader::OnWrite(base::OnceClosure resume, MojoResult result) {
@@ -81,12 +83,12 @@ void URLPipeLoader::OnWrite(base::OnceClosure resume, MojoResult result) {
     NotifyComplete(net::ERR_FAILED);
 }
 
-void URLPipeLoader::OnDataReceived(base::StringPiece string_piece,
+void URLPipeLoader::OnDataReceived(std::string_view string_view,
                                    base::OnceClosure resume) {
   producer_->Write(
       std::make_unique<mojo::StringDataSource>(
-          string_piece, mojo::StringDataSource::AsyncWritingMode::
-                            STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION),
+          string_view, mojo::StringDataSource::AsyncWritingMode::
+                           STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION),
       base::BindOnce(&URLPipeLoader::OnWrite, weak_factory_.GetWeakPtr(),
                      std::move(resume)));
 }

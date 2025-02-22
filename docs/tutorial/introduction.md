@@ -15,9 +15,9 @@ experience required.
 
 ## Getting started
 
-We recommend you to start with the [tutorial], which guides you through the
+We recommend you to start with the [tutorial][], which guides you through the
 process of developing an Electron app and distributing it to users.
-The [examples] and [API documentation] are also good places to browse around
+The [examples][] and [API documentation][] are also good places to browse around
 and discover new things.
 
 ## Running examples with Electron Fiddle
@@ -71,6 +71,6 @@ Are you getting stuck anywhere? Here are a few links to places to look:
 [chromium]: https://www.chromium.org/
 [discord]: https://discord.gg/electronjs
 [examples]: examples.md
-[fiddle]: https://electronjs.org/fiddle
+[fiddle]: https://www.electronjs.org/fiddle
 [issue-tracker]: https://github.com/electron/electron/issues
 [node]: https://nodejs.org/
