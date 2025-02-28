@@ -58,7 +58,7 @@ For more information, check out the [Process Sandboxing](./sandbox.md) guide.
 
 Preload scripts are injected before a web page loads in the renderer,
 similar to a Chrome extension's [content scripts][content-script]. To add features to your renderer
-that require privileged access, you can define [global] objects through the
+that require privileged access, you can define [global][] objects through the
 [contextBridge][contextbridge] API.
 
 To demonstrate this concept, you will create a preload script that exposes your app's
@@ -73,7 +73,7 @@ const { contextBridge } = require('electron')
 contextBridge.exposeInMainWorld('versions', {
   node: () => process.versions.node,
   chrome: () => process.versions.chrome,
-  electron: () => process.versions.electron,
+  electron: () => process.versions.electron
   // we can also expose variables, not just functions
 })
 ```
@@ -81,17 +81,17 @@ contextBridge.exposeInMainWorld('versions', {
 To attach this script to your renderer process, pass its path to the
 `webPreferences.preload` option in the BrowserWindow constructor:
 
-```js {8-10} title="main.js"
+```js {2,8-10} title="main.js"
 const { app, BrowserWindow } = require('electron')
-const path = require('path')
+const path = require('node:path')
 
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 800,
     height: 600,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-    },
+      preload: path.join(__dirname, 'preload.js')
+    }
   })
 
   win.loadFile('index.html')
@@ -115,10 +115,10 @@ There are two Node.js concepts that are used here:
 
 At this point, the renderer has access to the `versions` global, so let's display that
 information in the window. This variable can be accessed via `window.versions` or simply
-`versions`. Create a `renderer.js` script that uses the [`document.getElementById`]
+`versions`. Create a `renderer.js` script that uses the [`document.getElementById`][]
 DOM API to replace the displayed text for the HTML element with `info` as its `id` property.
 
-```js title="renderer.js"
+```js title="renderer.js" @ts-nocheck
 const information = document.getElementById('info')
 information.innerText = `This app is using Chrome (v${versions.chrome()}), Node.js (v${versions.node()}), and Electron (v${versions.electron()})`
 ```
@@ -183,7 +183,7 @@ contextBridge.exposeInMainWorld('versions', {
   node: () => process.versions.node,
   chrome: () => process.versions.chrome,
   electron: () => process.versions.electron,
-  ping: () => ipcRenderer.invoke('ping'),
+  ping: () => ipcRenderer.invoke('ping')
   // we can also expose variables, not just functions
 })
 ```
@@ -202,28 +202,30 @@ Then, set up your `handle` listener in the main process. We do this _before_
 loading the HTML file so that the handler is guaranteed to be ready before
 you send out the `invoke` call from the renderer.
 
-```js {1,11} title="main.js"
-const { app, BrowserWindow, ipcMain } = require('electron')
-const path = require('path')
+```js {1,15} title="main.js"
+const { app, BrowserWindow, ipcMain } = require('electron/main')
+const path = require('node:path')
 
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 800,
     height: 600,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-    },
+      preload: path.join(__dirname, 'preload.js')
+    }
   })
-  ipcMain.handle('ping', () => 'pong')
   win.loadFile('index.html')
 }
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  ipcMain.handle('ping', () => 'pong')
+  createWindow()
+})
 ```
 
 Once you have the sender and receiver set up, you can now send messages from the renderer
 to the main process through the `'ping'` channel you just defined.
 
-```js title='renderer.js'
+```js title='renderer.js' @ts-expect-error=[2]
 const func = async () => {
   const response = await window.versions.ping()
   console.log(response) // prints out 'pong'
@@ -250,36 +252,19 @@ apps often use the preload script to set up inter-process communication (IPC) in
 to pass arbitrary messages between the two kinds of processes.
 
 In the next part of the tutorial, we will be showing you resources on adding more
-functionality to your app, then teaching you distributing your app to users.
+functionality to your app, then teaching you how to distribute your app to users.
 
 <!-- Links -->
 
-[advanced-installation]: ./installation.md
-[application debugging]: ./application-debugging.md
-[app]: ../api/app.md
-[app-ready]: ../api/app.md#event-ready
-[app-when-ready]: ../api/app.md#appwhenready
-[browser-window]: ../api/browser-window.md
-[commonjs]: https://nodejs.org/docs/latest/api/modules.html#modules_modules_commonjs_modules
-[compound task]: https://code.visualstudio.com/Docs/editor/tasks#_compound-tasks
 [content-script]: https://developer.chrome.com/docs/extensions/mv3/content_scripts/
 [contextbridge]: ../api/context-bridge.md
-[context-isolation]: ./context-isolation.md
 [`document.getelementbyid`]: https://developer.mozilla.org/en-US/docs/Web/API/Document/getElementById
-[devtools-extension]: ./devtools-extension.md
 [dirname]: https://nodejs.org/api/modules.html#modules_dirname
 [global]: https://developer.mozilla.org/en-US/docs/Glossary/Global_object
 [ipc]: ./ipc.md
-[mdn-csp]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP
 [modules]: ../api/app.md
 [node-api]: https://nodejs.org/dist/latest/docs/api/
-[package-json-main]: https://docs.npmjs.com/cli/v7/configuring-npm/package-json#main
-[package-scripts]: https://docs.npmjs.com/cli/v7/using-npm/scripts
 [path-join]: https://nodejs.org/api/path.html#path_path_join_paths
-[process-model]: ./process-model.md
-[react]: https://reactjs.org
-[sandbox]: ./sandbox.md
-[webpack]: https://webpack.js.org
 
 <!-- Tutorial links -->
 

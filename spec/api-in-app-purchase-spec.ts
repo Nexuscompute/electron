@@ -1,5 +1,8 @@
-import { expect } from 'chai';
 import { inAppPurchase } from 'electron/main';
+
+import { expect } from 'chai';
+
+import { ifdescribe } from './lib/spec-helpers';
 
 describe('inAppPurchase module', function () {
   if (process.platform !== 'darwin') return;
@@ -33,18 +36,21 @@ describe('inAppPurchase module', function () {
     expect(inAppPurchase.getReceiptURL()).to.match(/_MASReceipt\/receipt$/);
   });
 
-  // The following three tests are disabled because they hit Apple servers, and
-  // Apple started blocking requests from AWS IPs (we think), so they fail on CI.
-  // TODO: find a way to mock out the server requests so we can test these APIs
-  // without relying on a remote service.
-  xdescribe('handles product purchases', () => {
+  // This fails on x64 in CI - likely owing to some weirdness with the machines.
+  // We should look into fixing it there but at least run it on arm6 machines.
+  ifdescribe(process.arch !== 'x64')('handles product purchases', () => {
     it('purchaseProduct() fails when buying invalid product', async () => {
+      const success = await inAppPurchase.purchaseProduct('non-exist');
+      expect(success).to.be.false('failed to purchase non-existent product');
+    });
+
+    it('purchaseProduct() accepts optional (Integer) argument', async () => {
       const success = await inAppPurchase.purchaseProduct('non-exist', 1);
       expect(success).to.be.false('failed to purchase non-existent product');
     });
 
-    it('purchaseProduct() accepts optional arguments', async () => {
-      const success = await inAppPurchase.purchaseProduct('non-exist');
+    it('purchaseProduct() accepts optional (Object) argument', async () => {
+      const success = await inAppPurchase.purchaseProduct('non-exist', { quantity: 1, username: 'username' });
       expect(success).to.be.false('failed to purchase non-existent product');
     });
 

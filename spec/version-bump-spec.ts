@@ -1,9 +1,9 @@
 import { expect } from 'chai';
 import { GitProcess, IGitExecutionOptions, IGitResult } from 'dugite';
-import { nextVersion } from '../script/release/version-bumper';
-import * as utils from '../script/release/version-utils';
 import * as sinon from 'sinon';
-import { ifdescribe } from './spec-helpers';
+
+import { ifdescribe } from './lib/spec-helpers';
+import { nextVersion } from '../script/release/version-bumper';
 
 class GitFake {
   branches: {
@@ -53,45 +53,6 @@ class GitFake {
 }
 
 describe('version-bumper', () => {
-  describe('makeVersion', () => {
-    it('makes a version with a period delimiter', () => {
-      const components = {
-        major: 2,
-        minor: 0,
-        patch: 0
-      };
-
-      const version = utils.makeVersion(components, '.');
-      expect(version).to.equal('2.0.0');
-    });
-
-    it('makes a version with a period delimiter and a partial pre', () => {
-      const components = {
-        major: 2,
-        minor: 0,
-        patch: 0,
-        pre: ['nightly', 12345678]
-      };
-
-      const version = utils.makeVersion(components, '.', utils.preType.PARTIAL);
-      expect(version).to.equal('2.0.0.12345678');
-    });
-
-    it('makes a version with a period delimiter and a full pre', () => {
-      const components = {
-        major: 2,
-        minor: 0,
-        patch: 0,
-        pre: ['nightly', 12345678]
-      };
-
-      const version = utils.makeVersion(components, '.', utils.preType.FULL);
-      expect(version).to.equal('2.0.0-nightly.12345678');
-    });
-  });
-
-  // On macOS Circle CI we don't have a real git environment due to running
-  // gclient sync on a linux machine. These tests therefore don't run as expected.
   ifdescribe(!(process.platform === 'linux' && process.arch.indexOf('arm') === 0) && process.platform !== 'darwin')('nextVersion', () => {
     describe('bump versions', () => {
       const nightlyPattern = /[0-9.]*(-nightly.(\d{4})(\d{2})(\d{2}))$/g;
@@ -132,8 +93,7 @@ describe('version-bumper', () => {
         ).to.be.rejectedWith('Cannot bump to beta from stable.');
       });
 
-      // TODO ELECTRON 15: Re-enable after Electron 15 alpha has released
-      it.skip('bumps to beta from nightly', async () => {
+      it('bumps to beta from nightly', async () => {
         const version = 'v2.0.0-nightly.19950901';
         const next = await nextVersion('beta', version);
         const matches = next.match(betaPattern);
@@ -186,6 +146,7 @@ describe('version-bumper', () => {
       it('throws on an invalid bump type', () => {
         const version = 'v2.0.0';
         return expect(
+          // @ts-expect-error 'WRONG' is not a valid bump type
           nextVersion('WRONG', version)
         ).to.be.rejectedWith('Invalid bump type.');
       });

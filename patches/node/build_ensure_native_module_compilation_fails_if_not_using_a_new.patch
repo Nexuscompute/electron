@@ -7,27 +7,27 @@ Subject: build: ensure native module compilation fails if not using a new
 This should not be upstreamed, it is a quality-of-life patch for downstream module builders.
 
 diff --git a/common.gypi b/common.gypi
-index 3e73073fb3f0e3bed74ff00521fc1b98997d9540..ca089eee5eafef6e08960d2a96ef27d8cfa95180 100644
+index 5d74876ab28f8c10bb9543f7652478514414d8d2..755bd203173a69564be203ad58c33eb50680b204 100644
 --- a/common.gypi
 +++ b/common.gypi
-@@ -79,6 +79,8 @@
-     # TODO(refack): make v8-perfetto happen
+@@ -86,6 +86,8 @@
      'v8_use_perfetto': 0,
+     'tsan%': 0,
  
 +    'using_electron_config_gypi%': 0,
 +
      ##### end V8 defaults #####
  
      # When building native modules using 'npm install' with the system npm,
-@@ -282,6 +284,7 @@
-       'V8_DEPRECATION_WARNINGS',
-       'V8_IMMINENT_DEPRECATION_WARNINGS',
+@@ -291,6 +293,7 @@
+     # Defines these mostly for node-gyp to pickup.
+     'defines': [
        '_GLIBCXX_USE_CXX11_ABI=1',
 +      'ELECTRON_ENSURE_CONFIG_GYPI',
      ],
  
      # Forcibly disable -Werror.  We support a wide range of compilers, it's
-@@ -392,6 +395,11 @@
+@@ -437,6 +440,11 @@
            }],
          ],
        }],
@@ -36,23 +36,23 @@ index 3e73073fb3f0e3bed74ff00521fc1b98997d9540..ca089eee5eafef6e08960d2a96ef27d8
 +          'USING_ELECTRON_CONFIG_GYPI',
 +        ],
 +      }],
-       ['v8_enable_pointer_compression == 1', {
-         'defines': [
-           'V8_COMPRESS_POINTERS',
+       # The defines bellow must include all things from the external_v8_defines
+       # list in v8/BUILD.gn.
+       ['v8_enable_v8_checks == 1', {
 diff --git a/configure.py b/configure.py
-index 1b7a721585764aecfd855ee47c47a3bd235d2ef3..c152ea9f29478729ec3752132140e3ec44dbd366 100755
+index 712ed40f77e54d52d5b3c52bb68e2b7d48879812..6bcb7450975636b5dbc689470663ee37903874d5 100755
 --- a/configure.py
 +++ b/configure.py
-@@ -1464,6 +1464,7 @@ def configure_library(lib, output, pkgname=None):
+@@ -1644,6 +1644,7 @@ def configure_library(lib, output, pkgname=None):
+ def configure_v8(o, configs):
+   set_configuration_variable(configs, 'v8_enable_v8_checks', release=1, debug=0)
  
- 
- def configure_v8(o):
 +  o['variables']['using_electron_config_gypi'] = 1
-   o['variables']['v8_enable_webassembly'] = 1
+   o['variables']['v8_enable_webassembly'] = 0 if options.v8_lite_mode else 1
    o['variables']['v8_enable_javascript_promise_hooks'] = 1
    o['variables']['v8_enable_lite_mode'] = 1 if options.v8_lite_mode else 0
 diff --git a/src/node.h b/src/node.h
-index 10061d4298368bc0ad53c0c8c3a3c964c13d4c3c..bee494f9da8470530ee9ec58958f8f2c7ce6a302 100644
+index 7726d3de1e82689655e8fceb4135eec303498572..120e3a1042e29590cbbf4be258a1cd2d3d4f0043 100644
 --- a/src/node.h
 +++ b/src/node.h
 @@ -22,6 +22,12 @@
@@ -61,7 +61,7 @@ index 10061d4298368bc0ad53c0c8c3a3c964c13d4c3c..bee494f9da8470530ee9ec58958f8f2c
  
 +#ifdef ELECTRON_ENSURE_CONFIG_GYPI
 +#ifndef USING_ELECTRON_CONFIG_GYPI
-+#error "It looks like you are building this native module without using the right config.gypi.  This normally means that you need to update electron-rebuild (>=3.2.8) or node-gyp (>=8.4.0) if you're building modules directly."
++#error "It looks like you are building this native module without using the right config.gypi.  This normally means that you need to update electron-rebuild (>=3.2.8) or node-gyp (>=9.0.0) if you're building modules directly."
 +#endif
 +#endif
 +

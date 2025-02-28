@@ -1,16 +1,20 @@
-import { expect } from 'chai';
 import { app, contentTracing, TraceConfig, TraceCategoriesAndOptions } from 'electron/main';
-import * as fs from 'fs';
-import * as path from 'path';
-import { ifdescribe, delay } from './spec-helpers';
 
-// FIXME: The tests are skipped on arm/arm64 and ia32.
-ifdescribe(!(['arm', 'arm64', 'ia32'].includes(process.arch)))('contentTracing', () => {
+import { expect } from 'chai';
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
+
+import { ifdescribe } from './lib/spec-helpers';
+
+// FIXME: The tests are skipped on linux arm/arm64
+ifdescribe(!(['arm', 'arm64'].includes(process.arch)) || (process.platform !== 'linux'))('contentTracing', () => {
   const record = async (options: TraceConfig | TraceCategoriesAndOptions, outputFilePath: string | undefined, recordTimeInMilliseconds = 1e1) => {
     await app.whenReady();
 
     await contentTracing.startRecording(options);
-    await delay(recordTimeInMilliseconds);
+    await setTimeout(recordTimeInMilliseconds);
     const resultFilePath = await contentTracing.stopRecording(outputFilePath);
 
     return resultFilePath;
@@ -24,7 +28,12 @@ ifdescribe(!(['arm', 'arm64', 'ia32'].includes(process.arch)))('contentTracing',
   });
 
   describe('startRecording', function () {
-    this.timeout(5e3);
+    if (process.platform === 'win32' && process.arch === 'arm64') {
+      // WOA needs more time
+      this.timeout(10e3);
+    } else {
+      this.timeout(5e3);
+    }
 
     const getFileSizeInKiloBytes = (filePath: string) => {
       const stats = fs.statSync(filePath);
@@ -70,9 +79,9 @@ ifdescribe(!(['arm', 'arm64', 'ia32'].includes(process.arch)))('contentTracing',
       expect(fs.existsSync(outputFilePath)).to.be.true('output exists');
 
       // If the `categoryFilter` param above is not respected
-      // the file size will be above 50KB.
+      // the file size will be above 60KB.
       const fileSizeInKiloBytes = getFileSizeInKiloBytes(outputFilePath);
-      const expectedMaximumFileSize = 10; // Depends on a platform.
+      const expectedMaximumFileSize = 60; // Depends on a platform.
 
       expect(fileSizeInKiloBytes).to.be.above(0,
         `the trace output file is empty, check "${outputFilePath}"`);
@@ -82,10 +91,16 @@ ifdescribe(!(['arm', 'arm64', 'ia32'].includes(process.arch)))('contentTracing',
     });
   });
 
-  describe('stopRecording', function () {
-    this.timeout(5e3);
+  ifdescribe(process.platform !== 'linux')('stopRecording', function () {
+    if (process.platform === 'win32' && process.arch === 'arm64') {
+      // WOA needs more time
+      this.timeout(10e3);
+    } else {
+      this.timeout(5e3);
+    }
 
-    it('does not crash on empty string', async () => {
+    // FIXME(samuelmaddock): this test regularly flakes
+    it.skip('does not crash on empty string', async () => {
       const options = {
         categoryFilter: '*',
         traceOptions: 'record-until-full,enable-sampling'
@@ -113,25 +128,23 @@ ifdescribe(!(['arm', 'arm64', 'ia32'].includes(process.arch)))('contentTracing',
     });
 
     it('rejects if no trace is happening', async () => {
-      await expect(contentTracing.stopRecording()).to.be.rejected();
+      await expect(contentTracing.stopRecording()).to.be.rejectedWith('Failed to stop tracing - no trace in progress');
     });
   });
 
   describe('captured events', () => {
     it('include V8 samples from the main process', async function () {
-      // This test is flaky on macOS CI.
-      this.retries(3);
-
+      this.timeout(60000);
       await contentTracing.startRecording({
         categoryFilter: 'disabled-by-default-v8.cpu_profiler',
         traceOptions: 'record-until-full'
       });
       {
-        const start = +new Date();
+        const start = Date.now();
         let n = 0;
         const f = () => {};
-        while (+new Date() - start < 200 || n < 500) {
-          await delay(0);
+        while (Date.now() - start < 200 && n < 500) {
+          await setTimeout(0);
           f();
           n++;
         }

@@ -57,10 +57,10 @@ To set user tasks for your application, you can use
 ##### Set user tasks
 
 Starting with a working application from the
-[Quick Start Guide](quick-start.md), update the `main.js` file with the
+[tutorial starter code][tutorial-starter-code], update the `main.js` file with the
 following lines:
 
-```javascript
+```js
 const { app } = require('electron')
 
 app.setUserTasks([
@@ -80,7 +80,7 @@ app.setUserTasks([
 To clear your tasks list, you need to call `app.setUserTasks` with an empty
 array in the `main.js` file.
 
-```javascript
+```js
 const { app } = require('electron')
 
 app.setUserTasks([])
@@ -89,7 +89,7 @@ app.setUserTasks([])
 > NOTE: The user tasks will still be displayed even after closing your
 application, so the icon and program path specified for a task should exist until your application is uninstalled.
 
-[msdn-jumplist]: https://docs.microsoft.com/en-us/windows/win32/shell/taskbar-extensions#tasks
+[msdn-jumplist]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions#tasks
 
 ### Thumbnail Toolbars
 
@@ -121,23 +121,23 @@ To set thumbnail toolbar in your application, you need to use
 ##### Set thumbnail toolbar
 
 Starting with a working application from the
-[Quick Start Guide](quick-start.md), update the `main.js` file with the
+[tutorial starter code][tutorial-starter-code], update the `main.js` file with the
 following lines:
 
-```javascript
-const { BrowserWindow } = require('electron')
-const path = require('path')
+```js
+const { BrowserWindow, nativeImage } = require('electron')
+const path = require('node:path')
 
 const win = new BrowserWindow()
 
 win.setThumbarButtons([
   {
     tooltip: 'button1',
-    icon: path.join(__dirname, 'button1.png'),
+    icon: nativeImage.createFromPath(path.join(__dirname, 'button1.png')),
     click () { console.log('button1 clicked') }
   }, {
     tooltip: 'button2',
-    icon: path.join(__dirname, 'button2.png'),
+    icon: nativeImage.createFromPath(path.join(__dirname, 'button2.png')),
     flags: ['enabled', 'dismissonclick'],
     click () { console.log('button2 clicked.') }
   }
@@ -149,14 +149,14 @@ win.setThumbarButtons([
 To clear thumbnail toolbar buttons, you need to call
 `BrowserWindow.setThumbarButtons` with an empty array in the `main.js` file.
 
-```javascript
+```js
 const { BrowserWindow } = require('electron')
 
 const win = new BrowserWindow()
 win.setThumbarButtons([])
 ```
 
-[msdn-thumbnail]: https://docs.microsoft.com/en-us/windows/win32/shell/taskbar-extensions#thumbnail-toolbars
+[msdn-thumbnail]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions#thumbnail-toolbars
 
 ### Icon Overlays in Taskbar
 
@@ -185,18 +185,18 @@ To set the overlay icon for a window, you need to use the
 #### Example
 
 Starting with a working application from the
-[Quick Start Guide](quick-start.md), update the `main.js` file with the
+[tutorial starter code][tutorial-starter-code], update the `main.js` file with the
 following lines:
 
-```javascript
-const { BrowserWindow } = require('electron')
+```js
+const { BrowserWindow, nativeImage } = require('electron')
 
 const win = new BrowserWindow()
 
-win.setOverlayIcon('path/to/overlay.png', 'Description for overlay')
+win.setOverlayIcon(nativeImage.createFromPath('path/to/overlay.png'), 'Description for overlay')
 ```
 
-[msdn-icon-overlay]: https://docs.microsoft.com/en-us/windows/win32/shell/taskbar-extensions#icon-overlays
+[msdn-icon-overlay]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions#icon-overlays
 
 ### Flash Frame
 
@@ -214,10 +214,10 @@ To flash the BrowserWindow taskbar button, you need to use the
 #### Example
 
 Starting with a working application from the
-[Quick Start Guide](quick-start.md), update the `main.js` file with the
+[tutorial starter code][tutorial-starter-code], update the `main.js` file with the
 following lines:
 
-```javascript
+```js
 const { BrowserWindow } = require('electron')
 
 const win = new BrowserWindow()
@@ -230,11 +230,11 @@ win.flashFrame(true)
 In the above example, it is called when the window comes into focus,
 but you might use a timeout or some other event to disable it.
 
-[msdn-flash-frame]: https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-flashwindow#remarks
-
+[msdn-flash-frame]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-flashwindow#remarks
 [setthumbarbuttons]: ../api/browser-window.md#winsetthumbarbuttonsbuttons-windows
 [setusertaskstasks]: ../api/app.md#appsetusertaskstasks-windows
 [setoverlayicon]: ../api/browser-window.md#winsetoverlayiconoverlay-description-windows
 [flashframe]: ../api/browser-window.md#winflashframeflag
 [recent-documents]: ./recent-documents.md
 [progress-bar]: ./progress-bar.md
+[tutorial-starter-code]: ../tutorial/tutorial-2-first-app.md#final-starter-code

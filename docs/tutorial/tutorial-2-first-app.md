@@ -81,10 +81,13 @@ the exact dependency versions to install.
   "version": "1.0.0",
   "description": "Hello World!",
   "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "author": "Jane Doe",
   "license": "MIT",
   "devDependencies": {
-    "electron": "19.0.0"
+    "electron": "23.1.3"
   }
 }
 ```
@@ -122,28 +125,29 @@ main process entry point is configured correctly. Create a `main.js` file in the
 of your project with a single line of code:
 
 ```js title='main.js'
-console.log(`Hello from Electron 👋`)
+console.log('Hello from Electron 👋')
 ```
 
 Because Electron's main process is a Node.js runtime, you can execute arbitrary Node.js code
-with the `electron` command (you can even use it as a [REPL]). To execute this script,
+with the `electron` command (you can even use it as a [REPL][]). To execute this script,
 add `electron .` to the `start` command in the [`scripts`][package-scripts]
 field of your package.json. This command will tell the Electron executable to look for the main
 script in the current directory and run it in dev mode.
 
-```json {8-10} title='package.json'
+```json {7} title='package.json'
 {
   "name": "my-electron-app",
   "version": "1.0.0",
   "description": "Hello World!",
   "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "author": "Jane Doe",
   "license": "MIT",
-  "scripts": {
-    "start": "electron ."
-  },
   "devDependencies": {
-    "electron": "^19.0.0"
+    "electron": "23.1.3"
   }
 }
 ```
@@ -195,7 +199,7 @@ const { app, BrowserWindow } = require('electron')
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 800,
-    height: 600,
+    height: 600
   })
 
   win.loadFile('index.html')
@@ -218,20 +222,34 @@ with CommonJS module syntax:
 - [app][app], which controls your application's event lifecycle.
 - [BrowserWindow][browser-window], which creates and manages app windows.
 
-:::info Capitalization conventions
+<details>
+<summary>Module capitalization conventions</summary>
 
 You might have noticed the capitalization difference between the **a**pp
 and **B**rowser**W**indow modules. Electron follows typical JavaScript conventions here,
 where PascalCase modules are instantiable class constructors (e.g. BrowserWindow, Tray,
 Notification) whereas camelCase modules are not instantiable (e.g. app, ipcRenderer, webContents).
 
-:::
+</details>
 
-:::warning ES Modules in Electron
+<details>
+<summary>Typed import aliases</summary>
+
+For better type checking when writing TypeScript code, you can choose to import
+main process modules from `electron/main`.
+
+```js
+const { app, BrowserWindow } = require('electron/main')
+```
+
+For more information, see the [Process Model docs](../tutorial/process-model.md#process-specific-module-aliases-typescript).
+</details>
+
+:::info ES Modules in Electron
 
 [ECMAScript modules](https://nodejs.org/api/esm.html) (i.e. using `import` to load a module)
-are currently not directly supported in Electron. You can find more information about the
-state of ESM in Electron in [electron/electron#21457](https://github.com/electron/electron/issues/21457).
+are supported in Electron as of Electron 28. You can find more information about the
+state of ESM in Electron and how to use them in our app in [our ESM guide](../tutorial/esm.md).
 
 :::
 
@@ -243,7 +261,7 @@ The `createWindow()` function loads your web page into a new BrowserWindow insta
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 800,
-    height: 600,
+    height: 600
   })
 
   win.loadFile('index.html')
@@ -252,13 +270,13 @@ const createWindow = () => {
 
 ### Calling your function when the app is ready
 
-```js title='main.js (Lines 12-14)'
+```js title='main.js (Lines 12-14)' @ts-type={createWindow:()=>void}
 app.whenReady().then(() => {
   createWindow()
 })
 ```
 
-Many of Electron's core modules are Node.js [event emitters] that adhere to Node's asynchronous
+Many of Electron's core modules are Node.js [event emitters][] that adhere to Node's asynchronous
 event-driven architecture. The app module is one of these emitters.
 
 In Electron, BrowserWindows can only be created after the app module's [`ready`][app-ready] event
@@ -270,7 +288,7 @@ calling `createWindow()` once its promise is fulfilled.
 You typically listen to Node.js events by using an emitter's `.on` function.
 
 ```diff
-+ app.on('ready').then(() => {
++ app.on('ready', () => {
 - app.whenReady().then(() => {
   createWindow()
 })
@@ -288,7 +306,7 @@ open a window that displays your web page!
 Each web page your app displays in a window will run in a separate process called a
 **renderer** process (or simply _renderer_ for short). Renderer processes have access
 to the same JavaScript APIs and tooling you use for typical front-end web
-development, such as using [webpack] to bundle and minify your code or [React][react]
+development, such as using [webpack][] to bundle and minify your code or [React][react]
 to build your user interfaces.
 
 ## Managing your app's window lifecycle
@@ -332,7 +350,7 @@ Because windows cannot be created before the `ready` event, you should only list
 `activate` events after your app is initialized. Do this by only listening for activate
 events inside your existing `whenReady()` callback.
 
-```js
+```js @ts-type={createWindow:()=>void}
 app.whenReady().then(() => {
   createWindow()
 
@@ -403,7 +421,7 @@ What we have done in the `launch.json` file is to create 3 configurations:
   that creates the process, we have to "attach" to it (`"request": "attach"`) instead of
   creating a new one.
   The renderer process is a web one, so the debugger we have to use is `chrome`.
-- `Main + renderer` is a [compound task] that executes the previous ones simultaneously.
+- `Main + renderer` is a [compound task][] that executes the previous ones simultaneously.
 
 :::caution
 
@@ -419,7 +437,7 @@ in development mode.
 
 If you want to dig deeper in the debugging area, the following guides provide more information:
 
-- [Application Debugging]
+- [Application Debugging][]
 - [DevTools Extensions][devtools extension]
 
 :::
@@ -445,14 +463,12 @@ privileged APIs and how to communicate between processes.
 <!-- Links -->
 
 [activate]: ../api/app.md#event-activate-macos
-[advanced-installation]: installation.md
 [app]: ../api/app.md
 [app-quit]: ../api/app.md#appquit
 [app-ready]: ../api/app.md#event-ready
 [app-when-ready]: ../api/app.md#appwhenready
 [application debugging]: ./application-debugging.md
 [browser-window]: ../api/browser-window.md
-[commonjs]: https://nodejs.org/docs/../api/modules.html#modules_modules_commonjs_modules
 [compound task]: https://code.visualstudio.com/Docs/editor/tasks#_compound-tasks
 [devtools extension]: ./devtools-extension.md
 [event emitters]: https://nodejs.org/api/events.html#events
@@ -465,10 +481,9 @@ privileged APIs and how to communicate between processes.
 [process-model]: process-model.md
 [react]: https://reactjs.org
 [repl]: ./repl.md
-[sandbox]: ./sandbox.md
 [webpack]: https://webpack.js.org
 [window-all-closed]: ../api/app.md#event-window-all-closed
-[wsl]: https://docs.microsoft.com/en-us/windows/wsl/about#what-is-wsl-2
+[wsl]: https://learn.microsoft.com/en-us/windows/wsl/about#what-is-wsl-2
 
 <!-- Tutorial links -->
 

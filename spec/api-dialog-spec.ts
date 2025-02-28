@@ -1,7 +1,11 @@
+import { dialog, BaseWindow, BrowserWindow } from 'electron/main';
+
 import { expect } from 'chai';
-import { dialog, BrowserWindow } from 'electron/main';
-import { closeAllWindows } from './window-helpers';
-import { ifit, delay } from './spec-helpers';
+
+import { setTimeout } from 'node:timers/promises';
+
+import { ifit } from './lib/spec-helpers';
+import { closeAllWindows } from './lib/window-helpers';
 
 describe('dialog module', () => {
   describe('showOpenDialog', () => {
@@ -13,6 +17,11 @@ describe('dialog module', () => {
 
       expect(() => {
         const w = new BrowserWindow();
+        dialog.showOpenDialog(w, { title: 'i am title' });
+      }).to.not.throw();
+
+      expect(() => {
+        const w = new BaseWindow();
         dialog.showOpenDialog(w, { title: 'i am title' });
       }).to.not.throw();
     });
@@ -51,6 +60,11 @@ describe('dialog module', () => {
         const w = new BrowserWindow();
         dialog.showSaveDialog(w, { title: 'i am title' });
       }).to.not.throw();
+
+      expect(() => {
+        const w = new BaseWindow();
+        dialog.showSaveDialog(w, { title: 'i am title' });
+      }).to.not.throw();
     });
 
     it('throws errors when the options are invalid', () => {
@@ -80,7 +94,7 @@ describe('dialog module', () => {
     afterEach(closeAllWindows);
 
     // parentless message boxes are synchronous on macOS
-    // dangling message boxes on windows cause a DCHECK: https://cs.chromium.org/chromium/src/base/win/message_window.cc?l=68&rcl=7faa4bf236a866d007dc5672c9ce42660e67a6a6
+    // dangling message boxes on windows cause a DCHECK: https://source.chromium.org/chromium/chromium/src/+/main:base/win/message_window.cc;drc=7faa4bf236a866d007dc5672c9ce42660e67a6a6;l=68
     ifit(process.platform !== 'darwin' && process.platform !== 'win32')('should not throw for a parentless message box', () => {
       expect(() => {
         dialog.showMessageBox({ message: 'i am message' });
@@ -92,11 +106,16 @@ describe('dialog module', () => {
         const w = new BrowserWindow();
         dialog.showMessageBox(w, { message: 'i am message' });
       }).to.not.throw();
+
+      expect(() => {
+        const w = new BaseWindow();
+        dialog.showMessageBox(w, { message: 'i am message' });
+      }).to.not.throw();
     });
 
     it('throws errors when the options are invalid', () => {
       expect(() => {
-        dialog.showMessageBox(undefined as any, { type: 'not-a-valid-type', message: '' });
+        dialog.showMessageBox(undefined as any, { type: 'not-a-valid-type' as any, message: '' });
       }).to.throw(/Invalid message box type/);
 
       expect(() => {
@@ -139,7 +158,23 @@ describe('dialog module', () => {
       const signal = controller.signal;
       const w = new BrowserWindow();
       const p = dialog.showMessageBox(w, { signal, message: 'i am message' });
-      await delay(500);
+      await setTimeout(500);
+      controller.abort();
+      const result = await p;
+      expect(result.response).to.equal(0);
+    });
+
+    it('does not crash when there is a defaultId but no buttons', async () => {
+      const controller = new AbortController();
+      const signal = controller.signal;
+      const w = new BrowserWindow();
+      const p = dialog.showMessageBox(w, {
+        signal,
+        message: 'i am message',
+        type: 'info',
+        defaultId: 0,
+        title: 'i am title'
+      });
       controller.abort();
       const result = await p;
       expect(result.response).to.equal(0);
@@ -170,7 +205,7 @@ describe('dialog module', () => {
         buttons: ['OK', 'Cancel'],
         cancelId: 1
       });
-      await delay(500);
+      await setTimeout(500);
       controller.abort();
       const result = await p;
       expect(result.response).to.equal(1);

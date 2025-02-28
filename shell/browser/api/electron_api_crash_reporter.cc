@@ -10,8 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "base/bind.h"
-#include "base/command_line.h"
+#include "base/containers/to_vector.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/utf_string_conversions.h"
@@ -19,7 +18,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "components/upload_list/crash_upload_list.h"
 #include "components/upload_list/text_log_upload_list.h"
-#include "content/public/common/content_switches.h"
+#include "electron/mas.h"
 #include "gin/arguments.h"
 #include "gin/data_object_builder.h"
 #include "shell/common/electron_paths.h"
@@ -28,6 +27,7 @@
 #include "shell/common/gin_converters/time_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/node_includes.h"
+#include "shell/common/process_util.h"
 #include "shell/common/thread_restrictions.h"
 
 #if !IS_MAS_BUILD()
@@ -40,9 +40,8 @@
 #endif
 
 #if BUILDFLAG(IS_LINUX)
-#include "base/containers/span.h"
 #include "base/files/file_util.h"
-#include "base/guid.h"
+#include "base/uuid.h"
 #include "components/crash/core/common/crash_keys.h"
 #include "components/upload_list/combining_upload_list.h"
 #include "v8/include/v8-wasm-trap-handler-posix.h"
@@ -82,6 +81,8 @@ const std::map<std::string, std::string>& GetGlobalCrashKeys() {
   return GetGlobalCrashKeysMutable();
 }
 
+namespace {
+
 bool GetClientIdPath(base::FilePath* path) {
   if (base::PathService::Get(electron::DIR_CRASH_DUMPS, path)) {
     *path = path->Append("client_id");
@@ -98,7 +99,7 @@ std::string ReadClientId() {
   if (GetClientIdPath(&client_id_path) &&
       (!base::ReadFileToStringWithMaxSize(client_id_path, &client_id, 36) ||
        client_id.size() != 36))
-    return std::string();
+    return {};
   return client_id;
 }
 
@@ -110,13 +111,15 @@ void WriteClientId(const std::string& client_id) {
     base::WriteFile(client_id_path, client_id);
 }
 
+}  // namespace
+
 std::string GetClientId() {
   static base::NoDestructor<std::string> client_id;
   if (!client_id->empty())
     return *client_id;
   *client_id = ReadClientId();
   if (client_id->empty()) {
-    *client_id = base::GenerateGUID();
+    *client_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
     WriteClientId(*client_id);
   }
   return *client_id;
@@ -142,17 +145,13 @@ void Start(const std::string& submit_url,
   ElectronCrashReporterClient::Get()->SetShouldRateLimit(rate_limit);
   ElectronCrashReporterClient::Get()->SetShouldCompressUploads(compress);
   ElectronCrashReporterClient::Get()->SetGlobalAnnotations(global_extra);
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  std::string process_type =
-      is_node_process
-          ? "node"
-          : command_line->GetSwitchValueASCII(::switches::kProcessType);
+  std::string process_type = is_node_process ? "node" : GetProcessType();
 #if BUILDFLAG(IS_LINUX)
   for (const auto& pair : extra)
     electron::crash_keys::SetCrashKey(pair.first, pair.second);
   {
     electron::ScopedAllowBlockingForElectron allow_blocking;
-    ::crash_reporter::InitializeCrashpad(process_type.empty(), process_type);
+    ::crash_reporter::InitializeCrashpad(IsBrowserProcess(), process_type);
   }
   if (ignore_system_crash_handler) {
     crashpad::CrashpadInfo::GetCrashpadInfo()
@@ -161,7 +160,7 @@ void Start(const std::string& submit_url,
 #elif BUILDFLAG(IS_MAC)
   for (const auto& pair : extra)
     electron::crash_keys::SetCrashKey(pair.first, pair.second);
-  ::crash_reporter::InitializeCrashpad(process_type.empty(), process_type);
+  ::crash_reporter::InitializeCrashpad(IsBrowserProcess(), process_type);
   if (ignore_system_crash_handler) {
     crashpad::CrashpadInfo::GetCrashpadInfo()
         ->set_system_crash_reporter_forwarding(crashpad::TriState::kDisabled);
@@ -172,8 +171,8 @@ void Start(const std::string& submit_url,
   base::FilePath user_data_dir;
   base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
   ::crash_reporter::InitializeCrashpadWithEmbeddedHandler(
-      process_type.empty(), process_type,
-      base::WideToUTF8(user_data_dir.value()), base::FilePath());
+      IsBrowserProcess(), process_type, base::WideToUTF8(user_data_dir.value()),
+      base::FilePath());
 #endif
 #endif
 }
@@ -221,18 +220,18 @@ v8::Local<v8::Value> GetUploadedReports(v8::Isolate* isolate) {
     electron::ScopedAllowBlockingForElectron allow_blocking;
     list->LoadSync();
   }
-  std::vector<UploadList::UploadInfo> uploads;
+
+  auto to_obj = [isolate](const UploadList::UploadInfo* upload) {
+    return gin::DataObjectBuilder{isolate}
+        .Set("date", upload->upload_time)
+        .Set("id", upload->upload_id)
+        .Build();
+  };
+
   constexpr size_t kMaxUploadReportsToList = std::numeric_limits<size_t>::max();
-  list->GetUploads(kMaxUploadReportsToList, &uploads);
-  std::vector<v8::Local<v8::Object>> result;
-  for (const auto& upload : uploads) {
-    result.push_back(gin::DataObjectBuilder(isolate)
-                         .Set("date", upload.upload_time)
-                         .Set("id", upload.upload_id)
-                         .Build());
-  }
-  v8::Local<v8::Value> v8_result = gin::ConvertToV8(isolate, result);
-  return v8_result;
+  return gin::ConvertToV8(
+      isolate,
+      base::ToVector(list->GetUploads(kMaxUploadReportsToList), to_obj));
 }
 #endif
 
@@ -279,4 +278,4 @@ void Initialize(v8::Local<v8::Object> exports,
 
 }  // namespace
 
-NODE_LINKED_MODULE_CONTEXT_AWARE(electron_browser_crash_reporter, Initialize)
+NODE_LINKED_BINDING_CONTEXT_AWARE(electron_browser_crash_reporter, Initialize)

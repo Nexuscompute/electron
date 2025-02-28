@@ -17,7 +17,7 @@ further configuration. If you want to disable the sandbox for a process, see the
 [Disabling the sandbox for a single process](#disabling-the-sandbox-for-a-single-process)
 section.
 
-## Sandbox behaviour in Electron
+## Sandbox behavior in Electron
 
 Sandboxed processes in Electron behave _mostly_ in the same way as Chromium's do, but
 Electron has a few additional concepts to consider because it interfaces with Node.js.
@@ -46,10 +46,16 @@ scripts attached to sandboxed renderers will still have a polyfilled subset of N
 APIs available. A `require` function similar to Node's `require` module is exposed,
 but can only import a subset of Electron and Node's built-in modules:
 
-* `electron` (only renderer process modules)
+* `electron` (following renderer process modules: `contextBridge`, `crashReporter`, `ipcRenderer`, `nativeImage`, `webFrame`, `webUtils`)
 * [`events`](https://nodejs.org/api/events.html)
 * [`timers`](https://nodejs.org/api/timers.html)
 * [`url`](https://nodejs.org/api/url.html)
+
+[node: imports](https://nodejs.org/api/esm.html#node-imports) are supported as well:
+
+* [`node:events`](https://nodejs.org/api/events.html)
+* [`node:timers`](https://nodejs.org/api/timers.html)
+* [`node:url`](https://nodejs.org/api/url.html)
 
 In addition, the preload script also polyfills certain Node.js primitives as globals:
 
@@ -84,7 +90,7 @@ the `sandbox: false` preference in the [`BrowserWindow`][browser-window] constru
 app.whenReady().then(() => {
   const win = new BrowserWindow({
     webPreferences: {
-      sandbox: true
+      sandbox: false
     }
   })
   win.loadURL('https://google.com')
@@ -162,7 +168,6 @@ backported. Your best chance at staying secure is to be on the latest stable
 version of Electron.
 
 [sandbox]: https://chromium.googlesource.com/chromium/src/+/main/docs/design/sandbox.md
-[issue-28466]: https://github.com/electron/electron/issues/28466
 [browser-window]: ../api/browser-window.md
 [enable-sandbox]: ../api/app.md#appenablesandbox
 [no-sandbox]: ../api/command-line-switches.md#--no-sandbox

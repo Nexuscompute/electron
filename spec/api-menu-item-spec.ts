@@ -1,7 +1,14 @@
 import { BrowserWindow, app, Menu, MenuItem, MenuItemConstructorOptions } from 'electron/main';
+
 import { expect } from 'chai';
-import { closeAllWindows } from './window-helpers';
-const { roleList, execute } = require('../lib/browser/api/menu-item-roles');
+
+import { ifdescribe } from './lib/spec-helpers';
+import { closeAllWindows } from './lib/window-helpers';
+import { roleList, execute } from '../lib/browser/api/menu-item-roles';
+
+function keys<Key extends string, Value> (record: Record<Key, Value>) {
+  return Object.keys(record) as Key[];
+}
 
 describe('MenuItems', () => {
   describe('MenuItem instance properties', () => {
@@ -131,9 +138,9 @@ describe('MenuItems', () => {
 
         const groups = findRadioGroups(template);
 
-        groups.forEach(g => {
+        for (const g of groups) {
           expect(findChecked(menu.items, g.begin!, g.end!)).to.deep.equal([g.begin]);
-        });
+        }
       });
 
       it('should assign groupId automatically', () => {
@@ -141,7 +148,7 @@ describe('MenuItems', () => {
 
         const usedGroupIds = new Set();
         const groups = findRadioGroups(template);
-        groups.forEach(g => {
+        for (const g of groups) {
           const groupId = (menu.items[g.begin!] as any).groupId;
 
           // groupId should be previously unused
@@ -153,14 +160,14 @@ describe('MenuItems', () => {
           for (let i = g.begin!; i < g.end!; ++i) {
             expect((menu.items[i] as any).groupId).to.equal(groupId);
           }
-        });
+        }
       });
 
       it("setting 'checked' should flip other items' 'checked' property", () => {
         const menu = Menu.buildFromTemplate(template);
 
         const groups = findRadioGroups(template);
-        groups.forEach(g => {
+        for (const g of groups) {
           expect(findChecked(menu.items, g.begin!, g.end!)).to.deep.equal([]);
 
           menu.items[g.begin!].checked = true;
@@ -168,7 +175,7 @@ describe('MenuItems', () => {
 
           menu.items[g.end! - 1].checked = true;
           expect(findChecked(menu.items, g.begin!, g.end!)).to.deep.equal([g.end! - 1]);
-        });
+        }
       });
     });
   });
@@ -179,7 +186,7 @@ describe('MenuItems', () => {
       const win = new BrowserWindow({ show: false, width: 200, height: 200 });
       const item = new MenuItem({ role: 'asdfghjkl' as any });
 
-      const canExecute = execute(item.role, win, win.webContents);
+      const canExecute = execute(item.role as any, win, win.webContents);
       expect(canExecute).to.be.false('can execute');
     });
 
@@ -187,7 +194,7 @@ describe('MenuItems', () => {
       const win = new BrowserWindow({ show: false, width: 200, height: 200 });
       const item = new MenuItem({ role: 'reload' });
 
-      const canExecute = execute(item.role, win, win.webContents);
+      const canExecute = execute(item.role as any, win, win.webContents);
       expect(canExecute).to.be.true('can execute');
     });
 
@@ -195,7 +202,7 @@ describe('MenuItems', () => {
       const win = new BrowserWindow({ show: false, width: 200, height: 200 });
       const item = new MenuItem({ role: 'resetZoom' });
 
-      const canExecute = execute(item.role, win, win.webContents);
+      const canExecute = execute(item.role as any, win, win.webContents);
       expect(canExecute).to.be.true('can execute');
     });
   });
@@ -237,7 +244,7 @@ describe('MenuItems', () => {
 
   describe('MenuItem role', () => {
     it('returns undefined for items without default accelerator', () => {
-      const list = Object.keys(roleList).filter(key => !roleList[key].accelerator);
+      const list = keys(roleList).filter(key => !roleList[key].accelerator);
 
       for (const role of list) {
         const item = new MenuItem({ role: role as any });
@@ -246,7 +253,7 @@ describe('MenuItems', () => {
     });
 
     it('returns the correct default label', () => {
-      for (const role of Object.keys(roleList)) {
+      for (const role of keys(roleList)) {
         const item = new MenuItem({ role: role as any });
         const label: string = roleList[role].label;
         expect(item.label).to.equal(label);
@@ -254,11 +261,11 @@ describe('MenuItems', () => {
     });
 
     it('returns the correct default accelerator', () => {
-      const list = Object.keys(roleList).filter(key => roleList[key].accelerator);
+      const list = keys(roleList).filter(key => roleList[key].accelerator);
 
       for (const role of list) {
         const item = new MenuItem({ role: role as any });
-        const accelerator: string = roleList[role].accelerator;
+        const accelerator = roleList[role].accelerator;
         expect(item.getDefaultRoleAccelerator()).to.equal(accelerator);
       }
     });
@@ -276,13 +283,7 @@ describe('MenuItems', () => {
     });
   });
 
-  describe('MenuItem appMenu', () => {
-    before(function () {
-      if (process.platform !== 'darwin') {
-        this.skip();
-      }
-    });
-
+  ifdescribe(process.platform === 'darwin')('MenuItem appMenu', () => {
     it('includes a default submenu layout when submenu is empty', () => {
       const item = new MenuItem({ role: 'appMenu' });
 

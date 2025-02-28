@@ -7,8 +7,8 @@
 
 #include <string>
 
+#include "base/memory/raw_ptr.h"
 #include "base/values.h"
-#include "components/prefs/pref_service.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/zoom_level_delegate.h"
 
@@ -16,6 +16,7 @@ namespace base {
 class FilePath;
 }  // namespace base
 
+class PrefService;
 class PrefRegistrySimple;
 
 namespace electron {
@@ -52,8 +53,8 @@ class ZoomLevelDelegate : public content::ZoomLevelDelegate {
   // zoom levels (if any) managed by this class (for its associated partition).
   void OnZoomLevelChanged(const content::HostZoomMap::ZoomLevelChange& change);
 
-  PrefService* pref_service_;
-  content::HostZoomMap* host_zoom_map_ = nullptr;
+  raw_ptr<PrefService> pref_service_;
+  raw_ptr<content::HostZoomMap> host_zoom_map_ = nullptr;
   base::CallbackListSubscription zoom_subscription_;
   std::string partition_key_;
 };

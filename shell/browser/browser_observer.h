@@ -9,12 +9,8 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list_types.h"
+#include "base/values.h"
 #include "build/build_config.h"
-#include "shell/browser/login_handler.h"
-
-namespace base {
-class DictionaryValue;
-}
 
 namespace electron {
 
@@ -26,7 +22,7 @@ class BrowserObserver : public base::CheckedObserver {
   // The browser has closed all windows and will quit.
   virtual void OnWillQuit(bool* prevent_default) {}
 
-  // The browser has closed all windows. If the browser is quiting, then this
+  // The browser has closed all windows. If the browser is quitting, then this
   // method will not be called, instead it will call OnWillQuit.
   virtual void OnWindowAllClosed() {}
 
@@ -82,12 +78,14 @@ class BrowserObserver : public base::CheckedObserver {
   // User clicked the native macOS new tab button. (macOS only)
   virtual void OnNewWindowForTab() {}
 
-  // Browser did become active.
+  // Browser became active.
   virtual void OnDidBecomeActive() {}
+  // Browser lost active status.
+  virtual void OnDidResignActive() {}
 #endif
 
  protected:
-  ~BrowserObserver() override {}
+  ~BrowserObserver() override = default;
 };
 
 }  // namespace electron

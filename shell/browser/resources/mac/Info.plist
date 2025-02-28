@@ -28,7 +28,7 @@
     <string>MainMenu</string>
     <key>NSPrincipalClass</key>
     <string>AtomApplication</string>
-    <key>NSAppTransportSecurity</key>    
+    <key>NSAppTransportSecurity</key>
     <dict>
       <key>NSAllowsArbitraryLoads</key>
       <true/>
@@ -64,5 +64,7 @@
         <string>${DEFAULT_APP_ASAR_HEADER_SHA}</string>
       </dict>
     </dict>
+    <key>NSPrefersDisplaySafeAreaCompatibilityMode</key>
+    <false/>
   </dict>
 </plist>

@@ -8,10 +8,10 @@ This reverts commit ebd8b8965c74ab06bb91f7a00b23822e1f1f26ca.
 It is causing significant TLS failures in Node.js.
 
 diff --git a/ssl/ssl_buffer.cc b/ssl/ssl_buffer.cc
-index 2ca14efae5ea478f43794a81883b00dfdb1a37b0..d73055fbf39334925ef4b4804bbaca57c4a4d5d3 100644
+index 2cdcbc346175eeee69402ecee7f169e61c655199..f7226fe711e4214b216ea2c5173a02124b80f9ef 100644
 --- a/ssl/ssl_buffer.cc
 +++ b/ssl/ssl_buffer.cc
-@@ -232,7 +232,6 @@ int ssl_handle_open_record(SSL *ssl, bool *out_retry, ssl_open_record_t ret,
+@@ -230,7 +230,6 @@ int ssl_handle_open_record(SSL *ssl, bool *out_retry, ssl_open_record_t ret,
        return 1;
  
      case ssl_open_record_close_notify:
@@ -20,10 +20,10 @@ index 2ca14efae5ea478f43794a81883b00dfdb1a37b0..d73055fbf39334925ef4b4804bbaca57
  
      case ssl_open_record_error:
 diff --git a/ssl/ssl_lib.cc b/ssl/ssl_lib.cc
-index a6ca0ab96266475384429e73970de18d4ba09912..c7e7bd02f2484f91bf55df1400e94804e61ea914 100644
+index c859ea612ce2e6be80c6351d85fae230ca5bc2dd..5f4ffedb3b19dee4eef62e2033b0000847167111 100644
 --- a/ssl/ssl_lib.cc
 +++ b/ssl/ssl_lib.cc
-@@ -1319,7 +1319,7 @@ int SSL_get_error(const SSL *ssl, int ret_code) {
+@@ -1196,7 +1196,7 @@ int SSL_get_error(const SSL *ssl, int ret_code) {
    }
  
    if (ret_code == 0) {
@@ -32,7 +32,7 @@ index a6ca0ab96266475384429e73970de18d4ba09912..c7e7bd02f2484f91bf55df1400e94804
        return SSL_ERROR_ZERO_RETURN;
      }
      // An EOF was observed which violates the protocol, and the underlying
-@@ -2592,13 +2592,7 @@ void *SSL_CTX_get_ex_data(const SSL_CTX *ctx, int idx) {
+@@ -2563,13 +2563,7 @@ void *SSL_CTX_get_ex_data(const SSL_CTX *ctx, int idx) {
    return CRYPTO_get_ex_data(&ctx->ex_data, idx);
  }
  
@@ -47,42 +47,3 @@ index a6ca0ab96266475384429e73970de18d4ba09912..c7e7bd02f2484f91bf55df1400e94804
  
  void SSL_CTX_set_tmp_rsa_callback(SSL_CTX *ctx,
                                    RSA *(*cb)(SSL *ssl, int is_export,
-diff --git a/ssl/ssl_test.cc b/ssl/ssl_test.cc
-index 3709a4694f3c9be67fd918f125f023b5aa660971..3507f4ef5bd4444c2499b06a5e312ab54f08bc3b 100644
---- a/ssl/ssl_test.cc
-+++ b/ssl/ssl_test.cc
-@@ -8358,11 +8358,6 @@ TEST(SSLTest, ErrorSyscallAfterCloseNotify) {
-   EXPECT_EQ(ret, 0);
-   EXPECT_EQ(SSL_get_error(client.get(), ret), SSL_ERROR_ZERO_RETURN);
- 
--  // Further calls to |SSL_read| continue to report |SSL_ERROR_ZERO_RETURN|.
--  ret = SSL_read(client.get(), buf, sizeof(buf));
--  EXPECT_EQ(ret, 0);
--  EXPECT_EQ(SSL_get_error(client.get(), ret), SSL_ERROR_ZERO_RETURN);
--
-   // Although the client has seen close_notify, it should continue to report
-   // |SSL_ERROR_SYSCALL| when its writes fail.
-   ret = SSL_write(client.get(), data, sizeof(data));
-@@ -8370,22 +8365,6 @@ TEST(SSLTest, ErrorSyscallAfterCloseNotify) {
-   EXPECT_EQ(SSL_get_error(client.get(), ret), SSL_ERROR_SYSCALL);
-   EXPECT_TRUE(write_failed);
-   write_failed = false;
--
--  // Cause |BIO_write| to fail with a return value of zero instead.
--  // |SSL_get_error| should not misinterpret this as a close_notify.
--  //
--  // This is not actually a correct implementation of |BIO_write|, but the rest
--  // of the code treats zero from |BIO_write| as an error, so ensure it does so
--  // correctly. Fixing https://crbug.com/boringssl/503 will make this case moot.
--  BIO_meth_set_write(method.get(), [](BIO *, const char *, int) -> int {
--    write_failed = true;
--    return 0;
--  });
--  ret = SSL_write(client.get(), data, sizeof(data));
--  EXPECT_EQ(ret, 0);
--  EXPECT_EQ(SSL_get_error(client.get(), ret), SSL_ERROR_SYSCALL);
--  EXPECT_TRUE(write_failed);
--  write_failed = false;
- }
- 
- // Test that |SSL_shutdown|, when quiet shutdown is enabled, simulates receiving

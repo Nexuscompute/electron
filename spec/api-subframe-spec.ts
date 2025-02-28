@@ -1,11 +1,14 @@
-import { expect } from 'chai';
-import * as path from 'path';
-import * as http from 'http';
-import { emittedNTimes, emittedOnce } from './events-helpers';
-import { closeWindow } from './window-helpers';
 import { app, BrowserWindow, ipcMain } from 'electron/main';
-import { AddressInfo } from 'net';
-import { ifdescribe } from './spec-helpers';
+
+import { expect } from 'chai';
+
+import { once } from 'node:events';
+import * as http from 'node:http';
+import * as path from 'node:path';
+
+import { emittedNTimes } from './lib/events-helpers';
+import { ifdescribe, listen } from './lib/spec-helpers';
+import { closeWindow } from './lib/window-helpers';
 
 describe('renderer nodeIntegrationInSubFrames', () => {
   const generateTests = (description: string, webPreferences: any) => {
@@ -58,7 +61,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
         const detailsPromise = emittedNTimes(ipcMain, 'preload-ran', 2);
         w.loadFile(path.resolve(__dirname, `fixtures/sub-frames/frame-container${fixtureSuffix}.html`));
         const [event1] = await detailsPromise;
-        const pongPromise = emittedOnce(ipcMain, 'preload-pong');
+        const pongPromise = once(ipcMain, 'preload-pong');
         event1[0].reply('preload-ping');
         const [, frameId] = await pongPromise;
         expect(frameId).to.equal(event1[0].frameId);
@@ -68,7 +71,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
         const detailsPromise = emittedNTimes(ipcMain, 'preload-ran', 2);
         w.loadFile(path.resolve(__dirname, `fixtures/sub-frames/frame-container${fixtureSuffix}.html`));
         const [event1] = await detailsPromise;
-        const pongPromise = emittedOnce(ipcMain, 'preload-pong');
+        const pongPromise = once(ipcMain, 'preload-pong');
         event1[0].senderFrame.send('preload-ping');
         const [, frameId] = await pongPromise;
         expect(frameId).to.equal(event1[0].frameId);
@@ -78,7 +81,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
         const detailsPromise = emittedNTimes(ipcMain, 'preload-ran', 2);
         w.loadFile(path.resolve(__dirname, `fixtures/sub-frames/frame-container${fixtureSuffix}.html`));
         const [, event2] = await detailsPromise;
-        const pongPromise = emittedOnce(ipcMain, 'preload-pong');
+        const pongPromise = once(ipcMain, 'preload-pong');
         event2[0].reply('preload-ping');
         const [, frameId] = await pongPromise;
         expect(frameId).to.equal(event2[0].frameId);
@@ -88,7 +91,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
         const detailsPromise = emittedNTimes(ipcMain, 'preload-ran', 2);
         w.loadFile(path.resolve(__dirname, `fixtures/sub-frames/frame-container${fixtureSuffix}.html`));
         const [, event2] = await detailsPromise;
-        const pongPromise = emittedOnce(ipcMain, 'preload-pong');
+        const pongPromise = once(ipcMain, 'preload-pong');
         event2[0].senderFrame.send('preload-ping');
         const [, frameId] = await pongPromise;
         expect(frameId).to.equal(event2[0].frameId);
@@ -98,7 +101,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
         const detailsPromise = emittedNTimes(ipcMain, 'preload-ran', 3);
         w.loadFile(path.resolve(__dirname, `fixtures/sub-frames/frame-with-frame-container${fixtureSuffix}.html`));
         const [, , event3] = await detailsPromise;
-        const pongPromise = emittedOnce(ipcMain, 'preload-pong');
+        const pongPromise = once(ipcMain, 'preload-pong');
         event3[0].reply('preload-ping');
         const [, frameId] = await pongPromise;
         expect(frameId).to.equal(event3[0].frameId);
@@ -108,7 +111,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
         const detailsPromise = emittedNTimes(ipcMain, 'preload-ran', 3);
         w.loadFile(path.resolve(__dirname, `fixtures/sub-frames/frame-with-frame-container${fixtureSuffix}.html`));
         const [, , event3] = await detailsPromise;
-        const pongPromise = emittedOnce(ipcMain, 'preload-pong');
+        const pongPromise = once(ipcMain, 'preload-pong');
         event3[0].senderFrame.send('preload-ping');
         const [, frameId] = await pongPromise;
         expect(frameId).to.equal(event3[0].frameId);
@@ -133,14 +136,14 @@ describe('renderer nodeIntegrationInSubFrames', () => {
 
   const generateConfigs = (webPreferences: any, ...permutations: {name: string, webPreferences: any}[]) => {
     const configs = [{ webPreferences, names: [] as string[] }];
-    for (let i = 0; i < permutations.length; i++) {
+    for (const permutation of permutations) {
       const length = configs.length;
       for (let j = 0; j < length; j++) {
         const newConfig = Object.assign({}, configs[j]);
         newConfig.webPreferences = Object.assign({},
-          newConfig.webPreferences, permutations[i].webPreferences);
+          newConfig.webPreferences, permutation.webPreferences);
         newConfig.names = newConfig.names.slice(0);
-        newConfig.names.push(permutations[i].name);
+        newConfig.names.push(permutation.name);
         configs.push(newConfig);
       }
     }
@@ -157,7 +160,7 @@ describe('renderer nodeIntegrationInSubFrames', () => {
     });
   };
 
-  generateConfigs(
+  const configs = generateConfigs(
     {
       preload: path.resolve(__dirname, 'fixtures/sub-frames/preload.js'),
       nodeIntegrationInSubFrames: true
@@ -174,9 +177,11 @@ describe('renderer nodeIntegrationInSubFrames', () => {
       name: 'webview',
       webPreferences: { webviewTag: true, preload: false }
     }
-  ).forEach(config => {
+  );
+
+  for (const config of configs) {
     generateTests(config.title, config.webPreferences);
-  });
+  }
 
   describe('internal <iframe> inside of <webview>', () => {
     let w: BrowserWindow;
@@ -202,13 +207,47 @@ describe('renderer nodeIntegrationInSubFrames', () => {
     });
 
     it('should not load preload scripts', async () => {
-      const promisePass = emittedOnce(ipcMain, 'webview-loaded');
-      const promiseFail = emittedOnce(ipcMain, 'preload-in-frame').then(() => {
+      const promisePass = once(ipcMain, 'webview-loaded');
+      const promiseFail = once(ipcMain, 'preload-in-frame').then(() => {
         throw new Error('preload loaded in internal frame');
       });
       await w.loadURL('about:blank');
       return Promise.race([promisePass, promiseFail]);
     });
+  });
+});
+
+describe('subframe with non-standard schemes', () => {
+  it('should not crash when changing subframe src to about:blank and back', async () => {
+    const w = new BrowserWindow({ show: false, width: 400, height: 400 });
+
+    const fwfPath = path.resolve(__dirname, 'fixtures/sub-frames/frame-with-frame.html');
+    await w.loadFile(fwfPath);
+
+    const originalSrc = await w.webContents.executeJavaScript(`
+      const iframe = document.querySelector('iframe');
+      iframe.src;
+    `);
+
+    const updatedSrc = await w.webContents.executeJavaScript(`
+      new Promise((resolve, reject) => {
+        const iframe = document.querySelector('iframe');
+        iframe.src = 'about:blank';
+        resolve(iframe.src);
+      })
+    `);
+
+    expect(updatedSrc).to.equal('about:blank');
+
+    const restoredSrc = await w.webContents.executeJavaScript(`
+      new Promise((resolve, reject) => {
+        const iframe = document.querySelector('iframe');
+        iframe.src = '${originalSrc}';
+        resolve(iframe.src);
+      })
+    `);
+
+    expect(restoredSrc).to.equal(originalSrc);
   });
 });
 
@@ -218,15 +257,12 @@ ifdescribe(process.platform !== 'linux')('cross-site frame sandboxing', () => {
   let crossSiteUrl: string;
   let serverUrl: string;
 
-  before(function (done) {
+  before(async function () {
     server = http.createServer((req, res) => {
       res.end(`<iframe name="frame" src="${crossSiteUrl}" />`);
     });
-    server.listen(0, '127.0.0.1', () => {
-      serverUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
-      crossSiteUrl = `http://localhost:${(server.address() as AddressInfo).port}/`;
-      done();
-    });
+    serverUrl = (await listen(server)).url;
+    crossSiteUrl = serverUrl.replace('127.0.0.1', 'localhost');
   });
 
   after(() => {
@@ -256,7 +292,7 @@ ifdescribe(process.platform !== 'linux')('cross-site frame sandboxing', () => {
 
         const metrics = app.getAppMetrics();
         const isProcessSandboxed = function (pid: number) {
-          const entry = metrics.filter(metric => metric.pid === pid)[0];
+          const entry = metrics.find(metric => metric.pid === pid);
           return entry && entry.sandboxed;
         };
 

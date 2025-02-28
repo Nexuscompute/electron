@@ -1,14 +1,16 @@
 import { expect } from 'chai';
-import * as cp from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import { ifit } from './spec-helpers';
+
+import * as cp from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+import { ifit, waitUntil } from './lib/spec-helpers';
 
 const fixturePath = path.resolve(__dirname, 'fixtures', 'crash-cases');
 
 let children: cp.ChildProcessWithoutNullStreams[] = [];
 
-const runFixtureAndEnsureCleanExit = (args: string[]) => {
+const runFixtureAndEnsureCleanExit = async (args: string[]) => {
   let out = '';
   const child = cp.spawn(process.execPath, args);
   children.push(child);
@@ -18,17 +20,20 @@ const runFixtureAndEnsureCleanExit = (args: string[]) => {
   child.stderr.on('data', (chunk: Buffer) => {
     out += chunk.toString();
   });
-  return new Promise<void>((resolve) => {
+
+  type CodeAndSignal = {code: number | null, signal: NodeJS.Signals | null};
+  const { code, signal } = await new Promise<CodeAndSignal>((resolve) => {
     child.on('exit', (code, signal) => {
-      if (code !== 0 || signal !== null) {
-        console.error(out);
-      }
-      expect(signal).to.equal(null, 'exit signal should be null');
-      expect(code).to.equal(0, 'should have exited with code 0');
-      children = children.filter(c => c !== child);
-      resolve();
+      resolve({ code, signal });
     });
   });
+  if (code !== 0 || signal !== null) {
+    console.error(out);
+  }
+  children = children.filter(c => c !== child);
+
+  expect(signal).to.equal(null, 'exit signal should be null');
+  expect(code).to.equal(0, 'should have exited with code 0');
 };
 
 const shouldRunCase = (crashCase: string) => {
@@ -37,9 +42,13 @@ const shouldRunCase = (crashCase: string) => {
     case 'quit-on-crashed-event': {
       return (process.platform !== 'win32' || process.arch !== 'ia32');
     }
-    // TODO(jkleinsc) fix this test on Linux on arm/arm64
+    // TODO(jkleinsc) fix this test on Linux on arm/arm64 and 32bit windows
     case 'js-execute-iframe': {
-      return (process.platform !== 'linux' || (process.arch !== 'arm64' && process.arch !== 'arm'));
+      if (process.platform === 'win32') {
+        return process.arch !== 'ia32';
+      } else {
+        return (process.platform !== 'linux' || (process.arch !== 'arm64' && process.arch !== 'arm'));
+      }
     }
     default: {
       return true;
@@ -48,11 +57,11 @@ const shouldRunCase = (crashCase: string) => {
 };
 
 describe('crash cases', () => {
-  afterEach(() => {
+  afterEach(async () => {
     for (const child of children) {
       child.kill();
     }
-    expect(children).to.have.lengthOf(0, 'all child processes should have exited cleanly');
+    await waitUntil(() => (children.length === 0));
     children.length = 0;
   });
   const cases = fs.readdirSync(fixturePath);

@@ -1,19 +1,14 @@
-import { expect } from 'chai';
 import { screen, desktopCapturer, BrowserWindow } from 'electron/main';
-import { delay, ifdescribe, ifit } from './spec-helpers';
-import { emittedOnce } from './events-helpers';
 
-import { closeAllWindows } from './window-helpers';
+import { expect } from 'chai';
 
-const features = process._linkedBinding('electron_common_features');
+import { once } from 'node:events';
+import { setTimeout } from 'node:timers/promises';
+
+import { ifdescribe, ifit } from './lib/spec-helpers';
+import { closeAllWindows } from './lib/window-helpers';
 
 ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('desktopCapturer', () => {
-  if (!features.isDesktopCapturerEnabled()) {
-    // This condition can't go the `ifdescribe` call because its inner code
-    // it still executed, and if the feature is disabled some function calls here fail.
-    return;
-  }
-
   let w: BrowserWindow;
 
   before(async () => {
@@ -67,14 +62,14 @@ ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('deskt
     const sources = await desktopCapturer.getSources({ types: ['screen'] });
     expect(sources).to.be.an('array').of.length(displays.length);
 
-    for (let i = 0; i < sources.length; i++) {
-      expect(sources[i].display_id).to.equal(displays[i].id.toString());
+    for (const [i, source] of sources.entries()) {
+      expect(source.display_id).to.equal(displays[i].id.toString());
     }
   });
 
   it('disabling thumbnail should return empty images', async () => {
     const w2 = new BrowserWindow({ show: false, width: 200, height: 200, webPreferences: { contextIsolation: false } });
-    const wShown = emittedOnce(w2, 'show');
+    const wShown = once(w2, 'show');
     w2.show();
     await wShown;
 
@@ -90,8 +85,8 @@ ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('deskt
 
   it('getMediaSourceId should match DesktopCapturerSource.id', async () => {
     const w = new BrowserWindow({ show: false, width: 100, height: 100, webPreferences: { contextIsolation: false } });
-    const wShown = emittedOnce(w, 'show');
-    const wFocused = emittedOnce(w, 'focus');
+    const wShown = once(w, 'show');
+    const wFocused = once(w, 'focus');
     w.show();
     w.focus();
     await wShown;
@@ -121,8 +116,8 @@ ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('deskt
 
   it('getSources should not incorrectly duplicate window_id', async () => {
     const w = new BrowserWindow({ show: false, width: 100, height: 100, webPreferences: { contextIsolation: false } });
-    const wShown = emittedOnce(w, 'show');
-    const wFocused = emittedOnce(w, 'focus');
+    const wShown = once(w, 'show');
+    const wFocused = once(w, 'focus');
     w.show();
     w.focus();
     await wShown;
@@ -155,6 +150,20 @@ ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('deskt
     }
   });
 
+  // Regression test - see https://github.com/electron/electron/issues/43002
+  it('does not affect window resizable state', async () => {
+    w.resizable = false;
+
+    const wShown = once(w, 'show');
+    w.show();
+    await wShown;
+
+    const sources = await desktopCapturer.getSources({ types: ['window', 'screen'] });
+    expect(sources).to.be.an('array').that.is.not.empty();
+
+    expect(w.resizable).to.be.false();
+  });
+
   it('moveAbove should move the window at the requested place', async () => {
     // DesktopCapturer.getSources() is guaranteed to return in the correct
     // z-order from foreground to background.
@@ -176,8 +185,8 @@ ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('deskt
 
       // Show and focus all the windows.
       for (const w of wList) {
-        const wShown = emittedOnce(w, 'show');
-        const wFocused = emittedOnce(w, 'focus');
+        const wShown = once(w, 'show');
+        const wFocused = once(w, 'focus');
 
         w.show();
         w.focus();
@@ -227,7 +236,7 @@ ifdescribe(!process.arch.includes('arm') && process.platform !== 'win32')('deskt
           w.focus();
           w.moveAbove(next.getMediaSourceId());
           // Ensure the window has time to move.
-          await delay(2000);
+          await setTimeout(2000);
         }
       }
 

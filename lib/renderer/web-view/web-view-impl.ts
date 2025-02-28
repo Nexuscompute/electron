@@ -1,8 +1,8 @@
-import type * as guestViewInternalModule from '@electron/internal/renderer/web-view/guest-view-internal';
-import { WEB_VIEW_CONSTANTS } from '@electron/internal/renderer/web-view/web-view-constants';
 import { syncMethods, asyncMethods, properties } from '@electron/internal/common/web-view-methods';
+import type * as guestViewInternalModule from '@electron/internal/renderer/web-view/guest-view-internal';
 import type { WebViewAttribute, PartitionAttribute } from '@electron/internal/renderer/web-view/web-view-attributes';
 import { setupWebViewAttributes } from '@electron/internal/renderer/web-view/web-view-attributes';
+import { WEB_VIEW_ATTRIBUTES } from '@electron/internal/renderer/web-view/web-view-constants';
 
 // ID generator.
 let nextId = 0;
@@ -19,16 +19,16 @@ export interface WebViewImplHooks {
 
 // Represents the internal state of the WebView node.
 export class WebViewImpl {
-  public beforeFirstNavigation = true
-  public elementAttached = false
-  public guestInstanceId?: number
-  public hasFocus = false
+  public beforeFirstNavigation = true;
+  public elementAttached = false;
+  public guestInstanceId?: number;
+  public hasFocus = false;
   public internalInstanceId?: number;
-  public viewInstanceId: number
+  public viewInstanceId: number;
 
   // on* Event handlers.
-  public on: Record<string, any> = {}
-  public internalElement: HTMLIFrameElement
+  public on: Record<string, any> = {};
+  public internalElement: HTMLIFrameElement;
 
   public attributes: Map<string, WebViewAttribute>;
 
@@ -75,7 +75,7 @@ export class WebViewImpl {
     }
 
     this.beforeFirstNavigation = true;
-    (this.attributes.get(WEB_VIEW_CONSTANTS.ATTRIBUTE_PARTITION) as PartitionAttribute).validPartitionId = true;
+    (this.attributes.get(WEB_VIEW_ATTRIBUTES.PARTITION) as PartitionAttribute).validPartitionId = true;
 
     // Since attachment swaps a local frame for a remote frame, we need our
     // internal iframe element to be local again before we can reattach.
@@ -145,13 +145,13 @@ export class WebViewImpl {
 
   // Updates state upon loadcommit.
   onLoadCommit (props: Record<string, any>) {
-    const oldValue = this.webviewNode.getAttribute(WEB_VIEW_CONSTANTS.ATTRIBUTE_SRC);
+    const oldValue = this.webviewNode.getAttribute(WEB_VIEW_ATTRIBUTES.SRC);
     const newValue = props.url;
     if (props.isMainFrame && (oldValue !== newValue)) {
       // Touching the src attribute triggers a navigation. To avoid
       // triggering a page reload on every guest-initiated navigation,
       // we do not handle this mutation.
-      this.attributes.get(WEB_VIEW_CONSTANTS.ATTRIBUTE_SRC)!.setValueIgnoreMutation(newValue);
+      this.attributes.get(WEB_VIEW_ATTRIBUTES.SRC)!.setValueIgnoreMutation(newValue);
     }
   }
 
@@ -165,7 +165,7 @@ export class WebViewImpl {
   }
 
   onAttach (storagePartitionId: number) {
-    return this.attributes.get(WEB_VIEW_CONSTANTS.ATTRIBUTE_PARTITION)!.setValue(storagePartitionId);
+    return this.attributes.get(WEB_VIEW_ATTRIBUTES.PARTITION)!.setValue(storagePartitionId);
   }
 
   buildParams () {
@@ -197,8 +197,6 @@ export class WebViewImpl {
   }
 }
 
-// I wish eslint wasn't so stupid, but it is
-// eslint-disable-next-line
 export const setupMethods = (WebViewElement: typeof ElectronInternal.WebViewElement, hooks: WebViewImplHooks) => {
   // Focusing the webview should move page focus to the underlying iframe.
   WebViewElement.prototype.focus = function () {

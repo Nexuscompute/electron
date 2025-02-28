@@ -1,11 +1,13 @@
 import { app } from 'electron';
-import { expect } from 'chai';
-import { emittedOnce } from './events-helpers';
-import { startRemoteControlApp, ifdescribe } from './spec-helpers';
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
+import { expect } from 'chai';
 import * as uuid from 'uuid';
+
+import { once } from 'node:events';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+
+import { startRemoteControlApp, ifdescribe } from './lib/spec-helpers';
 
 function isTestingBindingAvailable () {
   try {
@@ -19,7 +21,7 @@ function isTestingBindingAvailable () {
 // This test depends on functions that are only available when DCHECK_IS_ON.
 ifdescribe(isTestingBindingAvailable())('logging', () => {
   it('does not log by default', async () => {
-    // ELECTRON_ENABLE_LOGGING is turned on in the appveyor config.
+    // ELECTRON_ENABLE_LOGGING might be set in the environment, so remove it
     const { ELECTRON_ENABLE_LOGGING: _, ...envWithoutEnableLogging } = process.env;
     const rc = await startRemoteControlApp([], { env: envWithoutEnableLogging });
     const stderrComplete = new Promise<string>(resolve => {
@@ -87,7 +89,7 @@ ifdescribe(isTestingBindingAvailable())('logging', () => {
       setTimeout(() => { app.quit(); });
       return app.getPath('userData');
     });
-    await emittedOnce(rc.process, 'exit');
+    await once(rc.process, 'exit');
     const logFilePath = path.join(userDataDir, 'electron_debug.log');
     const stat = await fs.stat(logFilePath);
     expect(stat.isFile()).to.be.true();
@@ -103,7 +105,7 @@ ifdescribe(isTestingBindingAvailable())('logging', () => {
       setTimeout(() => { app.quit(); });
       return app.getPath('userData');
     });
-    await emittedOnce(rc.process, 'exit');
+    await once(rc.process, 'exit');
     const logFilePath = path.join(userDataDir, 'electron_debug.log');
     const stat = await fs.stat(logFilePath);
     expect(stat.isFile()).to.be.true();
@@ -118,7 +120,7 @@ ifdescribe(isTestingBindingAvailable())('logging', () => {
       process._linkedBinding('electron_common_testing').log(0, 'TEST_LOG');
       setTimeout(() => { require('electron').app.quit(); });
     });
-    await emittedOnce(rc.process, 'exit');
+    await once(rc.process, 'exit');
     const stat = await fs.stat(logFilePath);
     expect(stat.isFile()).to.be.true();
     const contents = await fs.readFile(logFilePath, 'utf8');
@@ -132,7 +134,7 @@ ifdescribe(isTestingBindingAvailable())('logging', () => {
       process._linkedBinding('electron_common_testing').log(0, 'TEST_LOG');
       setTimeout(() => { require('electron').app.quit(); });
     });
-    await emittedOnce(rc.process, 'exit');
+    await once(rc.process, 'exit');
     const stat = await fs.stat(logFilePath);
     expect(stat.isFile()).to.be.true();
     const contents = await fs.readFile(logFilePath, 'utf8');
@@ -146,7 +148,7 @@ ifdescribe(isTestingBindingAvailable())('logging', () => {
       process._linkedBinding('electron_common_testing').log(0, 'LATER_LOG');
       setTimeout(() => { require('electron').app.quit(); });
     });
-    await emittedOnce(rc.process, 'exit');
+    await once(rc.process, 'exit');
     const stat = await fs.stat(logFilePath);
     expect(stat.isFile()).to.be.true();
     const contents = await fs.readFile(logFilePath, 'utf8');

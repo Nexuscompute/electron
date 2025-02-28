@@ -6,18 +6,15 @@
 #define ELECTRON_SHELL_BROWSER_ELECTRON_BROWSER_MAIN_PARTS_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
-#include "base/callback.h"
-#include "base/timer/timer.h"
-#include "content/public/browser/browser_context.h"
+#include "base/functional/callback_forward.h"
+#include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "electron/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/geolocation_control.mojom.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
-#include "ui/display/screen.h"
-#include "ui/views/layout/layout_provider.h"
 
 class BrowserProcessImpl;
 class IconManager;
@@ -25,6 +22,11 @@ class IconManager;
 namespace base {
 class FieldTrialList;
 }
+
+namespace display {
+class Screen;
+class ScopedNativeScreen;
+}  // namespace display
 
 #if defined(USE_AURA)
 namespace wm {
@@ -36,13 +38,18 @@ class Screen;
 }
 #endif
 
-namespace device {
-class GeolocationManager;
+namespace node {
+class Environment;
 }
 
 namespace ui {
 class LinuxUiGetter;
-}
+class DarkModeManagerLinux;
+}  // namespace ui
+
+namespace views {
+class LayoutProvider;
+}  // namespace views
 
 namespace electron {
 
@@ -50,7 +57,6 @@ class Browser;
 class ElectronBindings;
 class JavascriptEnvironment;
 class NodeBindings;
-class NodeEnvironment;
 
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
 class ElectronExtensionsClient;
@@ -63,10 +69,6 @@ class ViewsDelegate;
 
 #if BUILDFLAG(IS_MAC)
 class ViewsDelegateMac;
-#endif
-
-#if BUILDFLAG(IS_LINUX)
-class DarkThemeObserver;
 #endif
 
 class ElectronBrowserMainParts : public content::BrowserMainParts {
@@ -89,10 +91,6 @@ class ElectronBrowserMainParts : public content::BrowserMainParts {
   // Returns the connection to GeolocationControl which can be
   // used to enable the location services once per client.
   device::mojom::GeolocationControl* GetGeolocationControl();
-
-#if BUILDFLAG(IS_MAC)
-  device::GeolocationManager* GetGeolocationManager();
-#endif
 
   // Returns handle to the class responsible for extracting file icons.
   IconManager* GetIconManager();
@@ -149,9 +147,7 @@ class ElectronBrowserMainParts : public content::BrowserMainParts {
 #endif
 
 #if BUILDFLAG(IS_LINUX)
-  // Used to notify the native theme of changes to dark mode.
-  std::unique_ptr<DarkThemeObserver> dark_theme_observer_;
-
+  std::unique_ptr<ui::DarkModeManagerLinux> dark_mode_manager_;
   std::unique_ptr<ui::LinuxUiGetter> linux_ui_getter_;
 #endif
 
@@ -162,13 +158,22 @@ class ElectronBrowserMainParts : public content::BrowserMainParts {
 
   // A place to remember the exit code once the message loop is ready.
   // Before then, we just exit() without any intermediate steps.
-  absl::optional<int> exit_code_;
+  std::optional<int> exit_code_;
 
+  const std::unique_ptr<NodeBindings> node_bindings_;
+
+  // depends-on: node_bindings_
+  const std::unique_ptr<ElectronBindings> electron_bindings_;
+
+  // depends-on: node_bindings_
   std::unique_ptr<JavascriptEnvironment> js_env_;
+
+  // depends-on: js_env_'s isolate
+  std::shared_ptr<node::Environment> node_env_;
+
+  // depends-on: js_env_'s isolate
   std::unique_ptr<Browser> browser_;
-  std::unique_ptr<NodeBindings> node_bindings_;
-  std::unique_ptr<ElectronBindings> electron_bindings_;
-  std::unique_ptr<NodeEnvironment> node_env_;
+
   std::unique_ptr<IconManager> icon_manager_;
   std::unique_ptr<base::FieldTrialList> field_trial_list_;
 
@@ -180,7 +185,6 @@ class ElectronBrowserMainParts : public content::BrowserMainParts {
   mojo::Remote<device::mojom::GeolocationControl> geolocation_control_;
 
 #if BUILDFLAG(IS_MAC)
-  std::unique_ptr<device::GeolocationManager> geolocation_manager_;
   std::unique_ptr<display::ScopedNativeScreen> screen_;
 #endif
 
